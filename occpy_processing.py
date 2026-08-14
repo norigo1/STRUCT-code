@@ -119,34 +119,42 @@ class ModelBoundaries:
         im = Image.fromarray(max_vals.statistic.T)
         im.save(fout)
 
-    def add_geotransform(self, fname, ulx, uly, llx, lly, pix_res):
+    def add_geotransform(self, fname, ulx, uly, lrx, lry, pix_resx, pix_resy):
         """
-
-        """
-        ds = gdal.Open(fname, gdal.GA_Updates)
-        fname_spl = fname.split(".")
-        fname_dst = fname_spl[:-1]
-        geotransform = gdal.Translate()
-        # finish adding the geotransform
-
-class Reader:
-
-    def __init__(self, fname):
-        """
-        Class to read Helios scene files from ply or obj format.
+        Create new Tiff with geotransform so Helios knows which way the images should
+        be used with respect to the scene.
 
         Parameters:
         -----------
-        fname : str, or None
-                Filepath of the scene object to read.
+        fname    : str
+                   Filename of the input Tiff image to add the geotransform to (the method
+                   creates a new Tiff image which has the '_gtform' at the end.
+        ulx      : float
+                   Upper left x coordinate
+        uly      : float
+                   Upper left y coordinate
+        lrx      : float
+                   Lower right x coordinate
+        lry      : float
+                   Lower right y coordinate
+        pix_res  : float
+                   Pixel resolution x
+        pix_resy : float
+                   Pixel resolution y
         """
-        fmt = fname.split(".")[-1]
-        if fmt=="obj":
-            self.obj_reader(fname)
-        elif fmt=="ply":
-            self.ply_reader(fname)
-        else:
-            raise IOError(f"{fname} should be either '.obj' or '.ply'")
+        ds = gdal.Open(fname, gdal.GA_Updates)
+        fname_spl = fname.split(".")
+        fname_dst = "".join(fpath_spl[:-1])+"_gtform."+fpath_spl[-1]
+        geotransform = gdal.Translate(
+                           fname_dst, 
+                           fname, 
+                           outputBounds=(ulx, uly, lrx, lry), 
+                           xRes=pix_resx, 
+                           yRes=pix_resy
+                       )
+        geotransform = None
+
+class Reader:
 
     @staticmethod
     def obj_reader(obj_file):
@@ -193,3 +201,116 @@ class Reader:
         op = plyfile.PlyData.read(ply_file)
         points = np.column_stack((op["vertex"]["x"], ["vertex"]["y"], ["vertex"]["z"]))
         return points
+
+    @staticmethod
+    def platform_xml(xml_file, write_to_scanpos=True):
+        """
+        Read the platform xml file given to Helios++ and return the scan positions
+
+        Parameters:
+        -----------
+        xml_file         : str
+                           Filepath to the platform xml file used in the Helios++ simulations
+        write_to_scanpos : bool, default=True
+                           Determines whether to write to a file that can be read by Occpy (True)
+                           or if the scan positions are just returned (False). If the write option
+                           is chosen then a file called 'ScanPositions.txt' is created in the same
+                           directory as the xml file.
+
+        Returns:
+        --------
+        scan_pos : np.arr, float
+                   n x 3 array of floats containing the x, y and z locations of the scanner position
+                   in each column
+        """
+        op = open(xml_file, "r").readlines()
+        positions = []
+        for line in op:
+            nline = line.strip()
+            if nline[:17]=="<platformSettings":
+                pos = [x[3:-1] for x in nline.split()[1:4]]
+                positions.append(pos)
+
+        scan_pos = np.array(positions).astype(float)
+        if write_to_scanpos:
+            oofname = "ScanPositions.txt"
+            if "/" in xml_file:
+                ofname = "/".join(xml_file.split("/")[:-1]) + f"/{oofname}"
+            else:
+                ofname = oofname
+            ### need to change scan_pos to a string formatted output
+            np.savetxt(ofname, scan_pos)
+        else:
+            return scan_pos
+
+
+def OccpyConfig(
+                self, 
+                root_folder, 
+                laz_folder, 
+                out_folder, 
+                DTM_in, 
+                DSM_in, 
+                voxel_dim, 
+                plot_dim, 
+                scanpos, 
+                lthresh=0,
+                ppiter=10000000,
+                ovox=False, 
+                single_return=False, 
+                is_mobile=False
+               ):
+    """
+    Create the config file needed to run Occpy
+
+    Parameters:
+    -----------
+    root_folder   : str
+                    Occpy uses this as a relative folder for all other folders specified
+    laz_folder    : str
+                    Folder where the laz files are
+    out_folder    : str
+                    Folder in which to store the Occpy outputs
+    DTM_in        : str
+                    Filepath to the tiff containing the digital terrain model for the site
+    DSM_in        : str
+                    Filepath to the tiff containing the digital surface model for the site
+    voxel_dim     : float
+                    The size of the voxel to use. When setting this consider the scientific
+                    requirements and computational demands. The smaller the voxel_dim, the 
+                    greater the number of voxels and corresponding RAM requirements. Currently,
+                    only cube voxels are supported.
+    plot_dim      : list, float
+                    n x 6 of floats giving the plot dimensions. Must be in the following order:
+                    xmin, ymin, zmin, xmax, ymax, zmax
+    scanpos       : str
+                    Filename to the file containing the positions of the scan locations.
+                    File should be ascii and have the following columns:
+                    #Name,X,Y,Z,Roll,Pitch,Yaw,ID which are comma separated
+    lthresh       : float, default=0
+                    Lower threshold above the ground to exclude from occlusion mapping
+    ppiter        : int, default=10000000
+                    Number of points read in from the laz file in each iteration
+    ovox          : bool, default=False
+                    Whether to export the output voxel grid to ply, slow if set to True
+    single_return : bool, default=False
+                    Whether the data is single return or multi return
+    is_mobile     : bool, default=False
+                    Flag to tell Occpy that the platform moves and therefore has a trajectory  
+    """
+    tif_in = {'DTM': DTM_in, 'DSM': DSM_in}
+    config = {
+              "root_folder": root_folder,
+              "laz_in": laz_in,
+              "tif_in": tif_in,
+              "out_dir": out_folder,
+              "vox_dim": voxel_dim,
+              "lower_threshold": lthresh,
+              "points_per_iter": ppiter,
+              "plot_dim": plot_dim,
+              "ScanPos": scanpos,
+              "output_voxels": ovox,
+              "single_return": single_return,
+              "is_mobile": is_mobile
+             }
+    return config
