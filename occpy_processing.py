@@ -10,6 +10,7 @@
 import glob
 import numpy as np
 from osgeo import gdal
+import occpy
 import plyfile
 import scipy
 
@@ -20,6 +21,186 @@ class Preparation:
 
     def __init__(self):
         something = 0
+
+
+class RunOccpy:
+
+    def __init__(self, config):
+        """
+        Do the Occpy ray tracing and store the outputs
+
+        Parameters:
+        -----------
+        config : dict
+                 Dictionary defining the Occpy ray tracing parameters
+                 See OccpyConfig for how this is formatted
+        """
+        self.config = config
+        self.occpy = occpy.OccPy(config=config)
+        self.occpy.define_sensor_pos(
+            path2file=config["ScanPos"],
+            delimiter=",",
+            hdr_scanpos_id='#Name',
+            hdr_x='X',
+            hdr_x='Y',
+            hdr_x='Z',
+            sens_pos_id_offset=0
+        )
+        self.occpy.do_raytracing()
+
+        results = occpy.util.normalize_occlusion_output(
+            input_folder=os.path.join(config["root_folder"], config['out_dir']),
+            PlotDim=config['plot_dim'],
+            vox_dim=config['vox_dim'],
+            dtm_file=os.path.join(config["root_folder"], config['tif_in']['DTM']),
+            dsm_file=os.path.join(config["root_folder"], config['tif_in']['DSM']),
+            lower_threshold=config['lower_threshold'],
+            output_voxels=config['output_voxels']
+        )
+        self.Nhit_norm, self.Nmiss_norm, self.Nocc_norm, self.Classification_norm, self.chm = results
+
+    def get_voxel_coords(self):
+        """
+        Return the coordinates of each voxel at minx, miny and minz, and maxx, maxy and maxz of that 
+        voxel
+
+        Returns:
+        --------
+        mins : np.arr, float
+               n x 3 numpy array containing the minx, miny and minz coordinates of the voxel
+        maxs : np.arr, float
+               n x 3 numpy array containing the maxx, maxy and maxz coordinates of the voxel
+        """
+        minx = np.arange(
+            self.config["plot_dim"][0], 
+            self.config["plot_dim"][3], 
+            self.config["vox_dim"]
+        )
+        miny = np.arange(
+            self.config["plot_dim"][1], 
+            self.config["plot_dim"][4], 
+            self.config["vox_dim"]
+        )
+        minz = np.arange(
+            self.config["plot_dim"][2], 
+            self.config["plot_dim"][5], 
+            self.config["vox_dim"]
+        )
+        maxx = minx + self.config["vox_dim"]
+        maxy = miny + self.config["vox_dim"]
+        maxz = minz + self.config["vox_dim"]
+
+        mins = np.column_stack((minx, miny, minz))
+        maxs = np.column_stack((maxx, maxy, maxz))
+
+        return mins, maxs
+
+    def get_occluded_voxels(self):
+        """
+        Return the coordinates of the occluded voxels
+
+        Classification is binary and based on:
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
+
+        Returns:
+        --------
+        occ_min : np.arr, float
+                  n x 3 array of the minimums of the occluded voxel coordinates 
+        occ_max : np.arr, float
+                  n x 3 array of the maximums of the occluded voxel coordinates
+        """
+        return self._filter_coordinates_by_category(3)
+
+    def get_hit_voxels(self):
+        """
+        Return the coordinates of the hit voxels (i.e. with interactions)
+
+        Classification is binary and based on:
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
+
+        Returns:
+        --------
+        hit_min : np.arr, float
+                  n x 3 array of the minimums of the occluded voxel coordinates 
+        hit_max : np.arr, float
+                  n x 3 array of the maximums of the occluded voxel coordinates
+        """
+        return self._filter_coordinates_by_category(1)
+
+    def get_empty_voxels(self):
+        """
+        Return the coordinates of the empty voxels
+
+        Classification is binary and based on:
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
+
+        Returns:
+        --------
+        emp_min : np.arr, float
+                  n x 3 array of the minimums of the occluded voxel coordinates 
+        emp_max : np.arr, float
+                  n x 3 array of the maximums of the occluded voxel coordinates
+        """
+        return self._filter_coordinates_by_category(2)
+
+    def get_unobserved_voxels(self):
+        """
+        Return the coordinates of the unobserved voxels
+
+        Classification is binary and based on:
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
+
+        Returns:
+        --------
+        uno_min : np.arr, float
+                  n x 3 array of the minimums of the occluded voxel coordinates 
+        uno_max : np.arr, float
+                  n x 3 array of the maximums of the occluded voxel coordinates
+        """
+        return self._filter_coordinates_by_category(4)
+
+    def _filter_coordinates_by_category(self, num):
+        """
+        Private method to return the coordinates based on the filter
+
+        Parameters:
+        -----------
+        num : int
+              Number associated with the category:
+                  1 = hit
+                  2 = empty
+                  3 = occluded
+                  4 = unobserved
+
+        Return:
+        -------
+        mins : np.arr, float
+               n x 3 array of the maximums of the classified voxel coordinates
+        maxs : np.arr, float
+               n x 3 array of the maximums of the classified voxel coordinates
+        """
+        xinds, yinds, zinds = np.where(classif==num)
+        vmin_coords, vmax_coords = self.get_voxel_coordinates()
+
+        mins = np.column_stack((
+                   vmin_coords[:,0][xinds],
+                   vmin_coords[:,1][yinds],
+                   vmin_coords[:,2][zinds]
+        ))
+        maxs = np.column_stack((
+                   vmax_coords[:,0][xinds],
+                   vmax_coords[:,1][yinds],
+                   vmax_coords[:,2][zinds]
+        ))
+        return mins, maxs
 
 
 class ModelBoundaries:
@@ -238,8 +419,8 @@ class Reader:
                 ofname = "/".join(xml_file.split("/")[:-1]) + f"/{oofname}"
             else:
                 ofname = oofname
-            ### need to change scan_pos to a string formatted output
-            np.savetxt(ofname, scan_pos)
+            spandid = [f"ScanPos{y:02d}"+",".join(x)+f",{y}\n" for y,x in enumerate(positions)]
+            op(ofname, "w").writelines(scandid)
         else:
             return scan_pos
 
