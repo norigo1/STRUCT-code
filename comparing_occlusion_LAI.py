@@ -11,6 +11,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import plyfile as ply
+import shapely
 
 from occpy_processing import RunOccpy
 
@@ -249,6 +250,7 @@ class LAICalculations:
     def voxel_lai_from_facets(xmin, xmax, ymin, ymax, zmin, zmax, facets):
         """
         Return the LAI from the voxel given the leaves present in that voxel
+        N.B. assumes all leaves have the same number of sides.
 
         Parameters:
         -----------
@@ -265,16 +267,149 @@ class LAICalculations:
         zmax   : float
                  Voxel maximum along the z axis
         facets : np.arr, float
-                 n x m x 3 numpy array of floats giving the 
+                 n x m x 3 numpy array of floats where n is the number of
+                 facets and m is the number of sides the facet has
+
+        Returns:
+        --------
+        vox_lai : float
+                  The LAI contained within the voxel
         """
-        in_voxel = (facets >= xmin) & (facets < xmax) & \
-                   (facets >= ymin) & (facets < ymax) & \
-                   (facets >= zmin) & (facets < zmax)
+        in_voxel = (facets[:,:,0] >= xmin) & (facets[:,:,0] < xmax) & \
+                   (facets[:,:,1] >= ymin) & (facets[:,:,1] < ymax) & \
+                   (facets[:,:,2] >= zmin) & (facets[:,:,2] < zmax)
 
-        # carry on here...
+        # get area for leaves which are fully in the voxel while ignoring
+        # leaves which are fully outside
+        sum_in = np.sum(in_voxel, axis=(1,2))
+        rel_facets = facets[sum_in>0, :, :]
 
+        # work out their area
+        areas_allin = self.polygon_area_3d(rel_facets[sum_in==9])
 
-    def polygon_area_3d_numpy(vertices):
+        # now sort the leaves which overlap with the voxel boundary,
+        # replace the vertices outside the voxel with points on the
+        # voxel where they intersect
+        new_areas = []
+        for j,facet in enumerate(rel_facets[sum_in<9]):
+            # get the intersection points with the voxel plane
+            facetmin1 = np.roll(facet, -1, axis=0)
+            facetpls1 = np.roll(facet, 1, axis=0)
+            ivj = in_voxel[j]
+            ivjm = np.roll(ivj, -1, axis=0)
+            ivjp = np.roll(ivj, 1, axis=0)
+
+            # create the shapely bounding box
+            
+
+            new_verts = []
+            for k,vertex in enumerate(ivj):
+                if np.sum(vertex)==3:
+                    new_vert.append(facet[k])
+                else:
+                    # look back
+                    if np.sum(ivjm[k])==3:
+                        ls = shapely.LineString([facetmin1[k], facet[k]])
+                    if np.sum(ivjp[k])==3:
+                        ls = shapely.LineString([facetpls1[k], facet[k]])
+                    new_vert.append() 
+
+            new_vert = np.array(new_vert)
+            new_area.append(self.polygon_area_3d(new_vert))
+
+        total_la = np.sum(areas_allin) + np.sum(new_area)
+        ground_a = (xmax - xmin) * (ymax - ymin)
+        vox_lai = total_la / ground_a 
+        return vox_lai
+
+    @staticmethod
+    def get_voxel_normals(xmin, xmax, ymin, ymax, zmin, zmax):
+        # get three points on the surface of each voxel side
+        points = np.array([[[xmin, ymin, zmin],
+                            [xmax, ymin, zmin],
+                            [xmin, ymax, zmin]],
+                           [[xmin, ymin, zmax],
+                            [xmax, ymin, zmax],
+                            [xmin, ymax, zmax]],
+                           [[xmin, ymin, zmin],
+                            [xmax, ymin, zmax],
+                            [xmin, ymin, zmax]],
+                           [[xmin, ymax, zmin],
+                            [xmax, ymax, zmax],
+                            [xmin, ymax, zmax]],
+                           [[xmin, ymin, zmin],
+                            [xmin, ymax, zmin],
+                            [xmin, ymin, zmax]],
+                           [[xmax, ymin, zmin],
+                            [xmax, ymax, zmin],
+                            [xmax, ymin, zmax]]])
+
+        v1 = points[:,1] - points[:,0]
+        v2 = points[:,2] - points[:,0]
+        cp = np.cross(v1, v2)
+        ncp = cp / np.linalg.norm(cp, axis=0)
+
+    @staticmethod
+    def intersect_segment_voxel_plane(A, B, P0, N, xmin, xmax, ymin, ymax, zmin, zmax):
+        """
+        Finds the intersection of a line segment AB with a plane.
+
+        Adapted from Google AI.
+    
+        Parameters:
+        -----------
+        A    : np.arr, float
+               3 x 1 numpy array of coordinates of the segment start point
+        B    : np.arr, float
+               3 x 1 numpy array of coordinates of the segment end point
+        P0   : np.arr, float
+               3 x 1 numpy array of a point on the plane
+        N    : np.arr, float
+               3 x 1 numpy array of the normal vector of the plane
+        xmin : float
+               Minimum of voxel along x axis
+        xmax : float
+               Maximum of voxel along x axis
+        ymin : float
+               Minimum of voxel along y axis
+        ymax : float
+               Maximum of voxel along y axis
+        zmin : float
+               Minimum of voxel along z axis
+        zmax : float
+               Maximum of voxel along z axis
+    
+        Returns:
+        --------
+        point : np.arr, float
+                n x 3 array of the 3D intersection point of None if intersection
+                is not in the voxel boundary
+        """
+        A = np.asarray(A)
+        B = np.asarray(B)
+        P0 = np.asarray(P0)
+        N = np.asarray(N)
+    
+        V = B - A
+        denominator = np.dot(V, N)
+    
+        # Calculate parameter t
+        t = np.dot(P0 - A, N) / denominator
+    
+        # Check if the intersection point lies within the voxel boundary
+        point = A + t * V
+        if (point[0]>=xmin) & (point[0]<=xmax) & \
+           (point[1]>=ymin) & (point[1]<=ymax) & \
+           (point[2]>=zmin) & (point[2]<=zmax):
+            return point
+        
+        return None
+
+    @staticmethod
+    def polygon_area_3d(vertices):
+        """
+        From Google AI
+        """
         # Ensure input is a NumPy array of shape (N, 3)
         v = np.asarray(vertices)
         if len(v) < 3:
@@ -292,6 +427,20 @@ class LAICalculations:
     
         return area
 
+    @staticmethod
+    def clip_polygon_by_plane(vertices, plane_axis, plane_val, is_upper):
+        """
+        Clips an array of 3D vertices (N, 3) against a single axis-aligned voxel plane.
+
+        Adapted from Google AI.
+        """
+        p1, p2 = vertices[i], next_vertices[i]
+        # Linear interpolation parameter t
+        t = (plane_val - p1[plane_axis]) / (p2[plane_axis] - p1[plane_axis])
+        intersect = p1 + t * (p2 - p1)
+        clipped_vertices.append(intersect)
+
+        return np.array(clipped_vertices)
 
 
 def read_obj(self, fname):
