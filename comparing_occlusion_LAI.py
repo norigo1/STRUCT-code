@@ -9,6 +9,7 @@
 
 import json
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import plyfile as ply
 
@@ -310,49 +311,35 @@ class LAICalculations:
             ivjp = np.roll(in_voxel, 1, axis=1)[j]
 
             new_verts = []
+            new_pts = []
             for k,vertex in enumerate(ivj):
-                if vertex:
+                if vertex and ivjm[k]:
                     new_verts.append(facet[k])
                 else:
-                    # SOMETHING WRONG HERE - TOO MANY VERTICES BEING EXTRACTED
+                    if vertex:
+                        new_verts.append(facet[k])
                     for i,norm in enumerate(norms):
-                        # look back
-                        if ivjm[k]:
-                            ip = self.intersect_segment_voxel_plane(
-                                      facet[k], 
-                                      facetmin1[k], 
-                                      pts[i],
-                                      norm, 
-                                      xmin, 
-                                      xmax, 
-                                      ymin, 
-                                      ymax, 
-                                      zmin, 
-                                      zmax
-                            )
-                            if ip is not None:
-                                new_verts.append(ip)
-                        # look forward
-                        if ivjp[k]:
-                            ip = self.intersect_segment_voxel_plane(
-                                      facet[k],
-                                      facetpls1[k],
-                                      pts[i],
-                                      norm, 
-                                      xmin, 
-                                      xmax,
-                                      ymin,
-                                      ymax,
-                                      zmin,
-                                      zmax
-                            )
-                            if ip is not None:
-                                new_verts.append(ip)
+                        ip = self.intersect_segment_voxel_plane(
+                                  facet[k],
+                                  facetmin1[k],
+                                  pts[i,:-1],
+                                  norm, 
+                                  xmin, 
+                                  xmax,
+                                  ymin,
+                                  ymax,
+                                  zmin,
+                                  zmax
+                        )
+                        if ip is not None:
+                            new_verts.append(ip)
 
             new_vert = np.array(new_verts)
             new_areas.append(self.polygon_area_3d(new_vert))
-            pdb.set_trace()
-
+            
+            nnew_vert = np.vstack((new_vert,new_vert[0]))
+            ffacet = np.vstack((facet, facet[0]))
+        
         total_la = np.sum(areas_allin) + np.sum(new_areas)
         ground_a = (xmax - xmin) * (ymax - ymin)
         vox_lai = total_la / ground_a 
@@ -377,31 +364,37 @@ class LAICalculations:
         ncp    : np.arr, float
                  6 x 3 numpy array of the normalised normal for each voxel face
         points : np.arr float
-                 6 x 3 x 3 numpy array of 3 points on the surface of each voxel
+                 6 x 4 x 3 numpy array of the four corners of the voxel sides
                  face
         """
-        # get three points on the surface of each voxel side
+        # get the vertices of the voxel side
         points = np.array([[[xmin, ymin, zmin],
                             [xmax, ymin, zmin],
+                            [xmax, ymax, zmin],
                             [xmin, ymax, zmin]],
                            [[xmin, ymin, zmax],
                             [xmax, ymin, zmax],
-                            [xmin, ymax, zmax]],
-                           [[xmin, ymin, zmin],
-                            [xmax, ymin, zmax],
-                            [xmin, ymin, zmax]],
-                           [[xmin, ymax, zmin],
                             [xmax, ymax, zmax],
                             [xmin, ymax, zmax]],
                            [[xmin, ymin, zmin],
-                            [xmin, ymax, zmin],
-                            [xmin, ymin, zmax]],
+                            [xmin, ymin, zmax],
+                            [xmin, ymax, zmax],
+                            [xmin, ymax, zmin]],
                            [[xmax, ymin, zmin],
+                            [xmax, ymin, zmax],
+                            [xmax, ymax, zmax],
+                            [xmax, ymax, zmin]],
+                           [[xmin, ymin, zmin],
+                            [xmax, ymin, zmin],
+                            [xmax, ymin, zmax],
+                            [xmin, ymin, zmax]],
+                           [[xmin, ymax, zmin],
                             [xmax, ymax, zmin],
-                            [xmax, ymin, zmax]]])
+                            [xmax, ymax, zmax],
+                            [xmin, ymax, zmax]]])
 
-        v1 = points[:,1] - points[:,0]
-        v2 = points[:,2] - points[:,0]
+        v1 = points[:-1,1] - points[:-1,0]
+        v2 = points[:-1,2] - points[:-1,0]
         cp = np.cross(v1, v2)
         ncp = cp / np.linalg.norm(cp, axis=0)
         return ncp, points
@@ -452,7 +445,8 @@ class LAICalculations:
         point = A + t * V
         if (point[0]>=xmin) & (point[0]<=xmax) & \
            (point[1]>=ymin) & (point[1]<=ymax) & \
-           (point[2]>=zmin) & (point[2]<=zmax):
+           (point[2]>=zmin) & (point[2]<=zmax) & \
+           np.all(0.0 <= t) & np.all(t <= 1.0):
             return point
         
         return None
