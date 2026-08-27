@@ -14,6 +14,7 @@ import numpy as np
 import plyfile as ply
 
 import pdb
+import time
 
 
 class OccpyAnalysis:
@@ -292,8 +293,11 @@ class LAICalculations:
         rel_facets = facets[sum_in>0, :, :]
         sum_inn = sum_in[sum_in>0]
 
+        a = time.time()
         # work out their area
         areas_allin = np.sum([self.polygon_area_3d(x) for x in rel_facets[sum_inn==3]])
+        b = time.time()
+        print(float(b-a)/60., np.sum(sum_inn==3))
 
         ## now sort the leaves which overlap with the voxel boundary,
         ## replace the vertices outside the voxel with points on the
@@ -301,14 +305,15 @@ class LAICalculations:
         # get the voxel side normals
         norms, pts = self.get_voxel_normals(xmin, xmax, ymin, ymax, zmin, zmax)
 
+        c = time.time()
         new_areas = []
-        for j,facet in enumerate(rel_facets[(sum_inn>0)*(sum_inn<3)]):
+        for j,facet in enumerate(rel_facets[sum_inn<3]):
             # get the intersection points with the voxel plane
             facetmin1 = np.roll(facet, -1, axis=0)
             facetpls1 = np.roll(facet, 1, axis=0)
-            ivj = in_voxel[j]
-            ivjm = np.roll(in_voxel, -1, axis=1)[j]
-            ivjp = np.roll(in_voxel, 1, axis=1)[j]
+            ivj = in_voxel[sum_in>0][sum_inn<3][j]
+            ivjm = np.roll(in_voxel[sum_in>0][sum_inn<3], -1, axis=1)[j]
+            ivjp = np.roll(in_voxel[sum_in>0][sum_inn<3], 1, axis=1)[j]
 
             new_verts = []
             new_pts = []
@@ -340,6 +345,8 @@ class LAICalculations:
             nnew_vert = np.vstack((new_vert,new_vert[0]))
             ffacet = np.vstack((facet, facet[0]))
         
+        d = time.time()
+        print(float(d-c)/60., np.sum(sum_inn<3))
         total_la = np.sum(areas_allin) + np.sum(new_areas)
         ground_a = (xmax - xmin) * (ymax - ymin)
         vox_lai = total_la / ground_a 
