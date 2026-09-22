@@ -15,6 +15,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+import pdb
 
 def _scan_id_from_name(name: str) -> int:
     """Extract numeric scan ID from names like 'ScanPos002' -> 2."""
@@ -162,13 +163,15 @@ def rebuild_survey_legs_from_grid(
     for leg in list(survey.findall("leg")):
         survey.remove(leg)
 
+    pdb.set_trace()
+
     x_values = np.arange(xmin, xmax + 0.5 * x_step, x_step)
     y_values = np.arange(ymin, ymax + 0.5 * y_step, y_step)
 
     angles = []
     if upright:
-        angles.append([0. 0., 0.])
-    if tilted:
+        angles.append([0., 0., 0.])
+    if tilt:
         angles.append([0., 90., 0.])
 
     written = 0
@@ -230,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--grid_pos",
         nargs=8,
+        type=float,
         help=("Grid settings in terms of xmin, xmax, ymin, ymax, xstep, ystep, upright, tilted."
               "upright and tilt should be 1 or 0 depending on whether the scans should be done"
               "in upright mode, tilt mode, or both - i.e. 1 0, 0 1, and 1 1 are the only options.")
@@ -246,7 +250,8 @@ if __name__ == "__main__":
         "--run_simulations",
         type=bool,
         default=False,
-        help="If set to true then the simulations start running. Only recommend if you know that the computer."
+        help="If set to true then the simulations start running. Only recommend if you know that the computer"
+             " has the memory resources to complete the simulation."
     )
 
     args = parser.parse_args()
@@ -281,7 +286,7 @@ if __name__ == "__main__":
             ymin=grid_pos[2],
             ymax=grid_pos[3],
             x_step=grid_pos[4],
-            y_step=grid_pos[5]
+            y_step=grid_pos[5],
             upright=bool(grid_pos[6]),
             tilt=bool(grid_pos[7])
         )
