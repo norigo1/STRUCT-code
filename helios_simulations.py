@@ -123,7 +123,14 @@ def rebuild_survey_legs_from_grid(
     y_step: float,
     upright: bool=True,
     tilt: bool=False,
-    scanner_template: str = "tls",
+    scanner_template: str="tls",
+    name: str="",
+    scene: str="",
+    scene_name: str="",
+    platform_file: str="",
+    platform: str="",
+    scanner_file: str="",
+    scanner: str=""
 ) -> int:
     """
     Build a regular XY grid of scanner legs in a HELIOS survey XML.
@@ -159,12 +166,20 @@ def rebuild_survey_legs_from_grid(
     if survey is None:
         raise ValueError("No <survey> element found in XML.")
 
-    # Remove existing legs and replace them with the generated grid.
     for leg in list(survey.findall("leg")):
         survey.remove(leg)
 
-    pdb.set_trace()
-
+    # change attributes in template if requested
+    if platform_file!="" and platform!="":
+        survey.set("platform", platform_file+"#"+platform)
+    if scanner_file!="" and scanner!="":
+        survey.set("scanner", scanner_file+"#"+scanner)
+    if name!="":
+        survey.set("name", name)
+    if scene!="":
+        survey.set("scene", scene+"#"+scene_name)
+    
+    # Remove existing legs and replace them with the generated grid.
     x_values = np.arange(xmin, xmax + 0.5 * x_step, x_step)
     y_values = np.arange(ymin, ymax + 0.5 * y_step, y_step)
 
