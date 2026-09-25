@@ -18,10 +18,11 @@ import subprocess
 import time
 import sys
 from abc import ABC, abstractmethod
-sys.path.append("Users/niallorigo/Research/UGent/SpaceTwin/progs/python/eradiate_tools/virtual-forest-radiative-transfer/helios/")
+sys.path.append("/Users/niallorigo/Research/UGent/SpaceTwin/progs/python/eradiate_tools/virtual-forest-radiative-transfer/helios/")
 import mesh_to_helios_obj as m2h
 import helios_simulations as hs
 
+import pdb
 
 class Ram(ABC):
     """Abstract interface for tracking process RAM usage."""
@@ -170,22 +171,28 @@ class TrackSceneElementsRAM:
         stem_ram = []
         for f in self.stem_files:
             sname = f.split("/")[-1].split(".")[0]
-            scene_name = self.generate_scene(tempdir, f"scene_stem_{sname}", f)
-            survey = self.generate_survey(tempdir, survey_template, scene_name, "scene_stem")
+            scene_fname, scene_name = self.generate_scene(tempdir, 
+                                                          f"scene_stem_{sname}",
+                                                          self.terrain_file[0],
+                                                          f)
+            survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             stem_ram.append(self.run_simulation(survey))
 
         leaf_ram = []
         for f in self.leaf_files:
             sname = f.split("/")[-1].split(".")[0]
-            scene_name = self.generate_scene(tempdir, f"scene_leaf_{sname}", f)
-            survey = self.generate_survey(tempdir, survey_template, scene_name, "scene_leaf")
+            scene_fname, scene_name = self.generate_scene(tempdir, 
+                                                          f"scene_leaf_{sname}",  
+                                                          self.terrain_file[0],
+                                                          f)
+            survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             leaf_ram.append(self.run_simulation(survey))
 
         terrain_ram = []
         for f in self.terrain_file:
             sname = f.split("/")[-1].split(".")[0]
-            scene_name = self.generate_scene(tempdir, f"scene_terrain_{sname}", f)
-            survey = self.generate_survey(tempdir, survey_template, scene_name, "scene_terrain")
+            scene_fname, scene_name = self.generate_scene(tempdir, f"scene_terrain_{sname}", f)
+            survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             terrain_ram.append(self.run_simulation(survey))
 
         self.ram = np.vstack((np.array(stem_ram), 
@@ -195,7 +202,7 @@ class TrackSceneElementsRAM:
                                  np.array(self.leaf_files),
                                  np.array(self.terrain_file)))
 
-    def generate_scene(self, outdir, scene_name, obj):
+    def generate_scene(self, outdir, scene_name, obj, terrain_obj):
         """
         Method to generate a scene containing just one obj
 
@@ -207,17 +214,20 @@ class TrackSceneElementsRAM:
                      Name of the scene, also used for the filename of the scene
         obj        : str
                      The object file to include in the scene
+        terrain_obj : str
+                      The terrain object file to include in the scene
 
         Returns:
         --------
         scene_fname : str
                       The output filepath of the newly created scene
         """
-        if outdir[-1]!="/": outdir+="/"
-        scene_fname = scene_name + ".xml"
+        outdir = os.path.abspath(outdir)
+        os.makedirs(outdir, exist_ok=True)
+        scene_fname = os.path.join(outdir, scene_name + ".xml")
 
-        m2h.generate_scene([obj], outdir+scene_fname, scene_name=scene_name)
-        return outdir+scene_fname
+        m2h.generate_scene([[0, obj], [1, terrain_obj]], scene_fname, scene_name=scene_name)
+        return scene_fname, scene_name
 
     def generate_survey(self, outdir, template, scene, scene_name):
         """
@@ -234,16 +244,20 @@ class TrackSceneElementsRAM:
         scene_name : str
                      Name of the scene, also used for the filename of the scene
         """
-        if outdir[-1]!="/": outdir+="/"
-        hs.rebuild_survey_legs_from_grid(template, 
-                                         outdir+scene, 
-                                         0, 1, 0, 1, 1, 1, 
-                                         upright=True, 
-                                         tilt=True,
-                                         name=scene_name, 
-                                         scene=scene,
-                                         scene_name=scene_name)
-        return outdir+scene_name+".xml"
+        outdir = os.path.abspath(outdir)
+        os.makedirs(outdir, exist_ok=True)
+        ofile = os.path.join(outdir, scene_name + "_survey.xml")
+        hs.rebuild_survey_legs_from_grid(
+            template,
+            ofile,
+            0, 1, 0, 1, 1, 1,
+            upright=True,
+            tilt=True,
+            name=scene_name,
+            scene=scene,
+            scene_name=scene_name,
+        )
+        return ofile
     
     def run_simulation(self, survey):
         """
@@ -254,9 +268,15 @@ class TrackSceneElementsRAM:
         survey     : str
                      Filename for the survey to run
         """
-        # get pid of the helios process
-        pid = subprocess.Popen(["$HELIOS", survey, "--lasOutput"]).pid
-        ram = LogRAM(pid, logtime=10)
+        helios_bin = os.environ.get("HELIOS")
+        if not helios_bin:
+            raise RuntimeError(
+                "HELIOS is not set in the environment. Export it first, e.g.: "
+                "export HELIOS=/path/to/helios"
+            )
+
+        proc = subprocess.Popen([helios_bin, survey, "--lasOutput"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ram = LogRAM(proc.pid, logtime=10)
         return ram.max_ram
 
 
@@ -274,7 +294,6 @@ if __name__ == "__main__":
     leaf_dir = args.leaf_dir
     terrain_dir = args.terrain_dir
     survey_template = args.survey_template
-    outdir = args.outdir
     outfile = args.outfile
     tempdir = args.tempdir
     
