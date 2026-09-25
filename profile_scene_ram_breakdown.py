@@ -168,8 +168,11 @@ class TrackSceneElementsRAM:
         else:
             raise ValueError(f"Temp directory {tempdir} already exists, please remove it or specify a different tempdir.")
 
+        counter = len(self.stem_files) + len(self.leaf_files) + len(self.terrain_file)
+        print(f"Tracking RAM usage for {counter} scene elements...")
+
         stem_ram = []
-        for f in self.stem_files:
+        for ff,f in enumerate(self.stem_files):
             sname = f.split("/")[-1].split(".")[0]
             scene_fname, scene_name = self.generate_scene(tempdir, 
                                                           f"scene_stem_{sname}",
@@ -177,9 +180,10 @@ class TrackSceneElementsRAM:
                                                           f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             stem_ram.append(self.run_simulation(survey))
+            print(f"Processed {ff+1}/{counter} stem files", end="\r")
 
         leaf_ram = []
-        for f in self.leaf_files:
+        for ff,f in enumerate(self.leaf_files):
             sname = f.split("/")[-1].split(".")[0]
             scene_fname, scene_name = self.generate_scene(tempdir, 
                                                           f"scene_leaf_{sname}",  
@@ -187,13 +191,15 @@ class TrackSceneElementsRAM:
                                                           f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             leaf_ram.append(self.run_simulation(survey))
+            print(f"Processed {ff+1+len(self.stem_files)}/{counter} leaf files", end="\r")
 
         terrain_ram = []
-        for f in self.terrain_file:
+        for ff,f in enumerate(self.terrain_file):
             sname = f.split("/")[-1].split(".")[0]
             scene_fname, scene_name = self.generate_scene(tempdir, f"scene_terrain_{sname}", f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             terrain_ram.append(self.run_simulation(survey))
+            print(f"Processed {ff+1+len(self.stem_files)+len(self.leaf_files)}/{counter} terrain files", end="\r")
 
         self.ram = np.vstack((np.array(stem_ram), 
                               np.array(leaf_ram), 
