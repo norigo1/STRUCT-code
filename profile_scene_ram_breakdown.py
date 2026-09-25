@@ -73,7 +73,7 @@ class LogRAM(Ram):
             ram = psutil.Process(pid).memory_info().rss / (1024**2)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             ram = 0.0
-        return float(ram)
+        return float(ram)*0.001  # Convert to GB
 
     def profile(self, pid, logtime=5, max_samples=None):
         """Sample RAM usage until the process exits or max_samples is reached."""
@@ -180,7 +180,7 @@ class TrackSceneElementsRAM:
                                                           f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             stem_ram.append(self.run_simulation(survey))
-            print(f"Processed {ff+1}/{counter} stem files", end="\r")
+            print(f"Processed {ff+1}/{counter} stem files, RAM: {stem_ram[-1]:.2f} GB", end="\r")
 
         leaf_ram = []
         for ff,f in enumerate(self.leaf_files):
@@ -191,7 +191,7 @@ class TrackSceneElementsRAM:
                                                           f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             leaf_ram.append(self.run_simulation(survey))
-            print(f"Processed {ff+1+len(self.stem_files)}/{counter} leaf files", end="\r")
+            print(f"Processed {ff+1+len(self.stem_files)}/{counter} leaf files, RAM: {leaf_ram[-1]:.2f} GB", end="\r")
 
         terrain_ram = []
         for ff,f in enumerate(self.terrain_file):
@@ -199,7 +199,7 @@ class TrackSceneElementsRAM:
             scene_fname, scene_name = self.generate_scene(tempdir, f"scene_terrain_{sname}", f)
             survey = self.generate_survey(tempdir, survey_template, scene_fname, scene_name)
             terrain_ram.append(self.run_simulation(survey))
-            print(f"Processed {ff+1+len(self.stem_files)+len(self.leaf_files)}/{counter} terrain files", end="\r")
+            print(f"Processed {ff+1+len(self.stem_files)+len(self.leaf_files)}/{counter} terrain files, RAM: {terrain_ram[-1]:.2f} GB", end="\r")
 
         self.ram = np.vstack((np.array(stem_ram), 
                               np.array(leaf_ram), 
