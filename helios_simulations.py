@@ -27,6 +27,183 @@ def _scan_id_from_name(name: str) -> int:
     return int(match.group(1))
 
 
+def _obj_centroid(obj_path: str) -> np.ndarray:
+    """Return the mean XYZ coordinate of all vertices in an OBJ mesh."""
+    obj_path = str(Path(obj_path))
+    verts = []
+    with open(obj_path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip().split()
+            if len(s) >= 4 and s[0] == "v":
+                verts.append(np.asarray(s[1:3], dtype=float))
+    if not verts:
+        raise ValueError(f"No vertices found in OBJ file: {obj_path}")
+    return np.mean(np.asarray(verts, dtype=float), axis=0)
+
+def _obj_distance_to_point(obj_path: str, point: np.ndarray) -> float:
+    """Euclidean distance from a scan position to an object centroid."""
+    return float(np.linalg.norm(_obj_centroid(obj_path) - point))
+
+def generate_scene_for_radius(
+    stem_files: Iterable[str],
+    leaf_files: Iterable[str],
+    terrain_file: str,
+    scan_position: tuple[float, float],
+    radius: float,
+    outpath: str,
+    scene_name: str,
+) -> list[tuple[int, str]]:
+    """
+    Build a HELIOS scene containing terrain plus all stem/leaf objects whose centroid is within
+    a specified radius of the scan position.
+
+    The terrain is always included unconditionally. Stem and leaf parts share the same part ID.
+    """
+    if radius < 0:
+        raise ValueError("radius must be >= 0.")
+
+    scan_point = np.asarray(scan_position, dtype=float)
+    stem_list = [str(Path(p)) for p in stem_files]
+    leaf_list = [str(Path(p)) for p in leaf_files]
+    leaf_lookup = {Path(p).name: p for p in leaf_list}
+
+    parts: list[tuple[int, str]] = [(0, str(Path(terrain_file)))]
+    next_id = 1
+
+    for stem_path in stem_list:
+        if _obj_distance_to_point(stem_path, scan_point) > radius:
+            continue
+
+        stem_name = Path(stem_path).name
+        parts.append((next_id, stem_path))
+        leaf_name = stem_name.replace("_mesh.obj", "_leaves.obj")
+        leaf_path = leaf_lookup.get(leaf_name)
+        if leaf_path is not None:
+            parts.append((next_id, str(Path(leaf_path))))
+        next_id += 1
+
+    ET_root = ET.Element("document")
+    scene = ET.SubElement(ET_root, "scene", {"id": str(scene_name), "name": str(scene_name)})
+    for part_id, part_path in parts:
+        part = ET.SubElement(scene, "part", {"id": str(part_id)})
+        flt = ET.SubElement(part, "filter", {"type": "objloader"})
+        ET.SubElement(
+            flt,
+            "param",
+            {"type": "string", "key": "filepath", "value": str(part_path)},
+        )
+        ET.SubElement(flt, "param", {"type": "string", "key": "up", "value": "z"})
+
+    tree = ET.ElementTree(ET_root)
+    ET.indent(tree, space="    ")
+    outpath = str(Path(outpath))
+    Path(outpath).parent.mkdir(parents=True, exist_ok=True)
+    tree.write(outpath, encoding="UTF-8", xml_declaration=True)
+    return parts
+
+def generate_radius_scenes_from_csv(
+    path_scanpos: str,
+    stem_dir: str,
+    leaf_dir: str,
+    terrain_dir: str,
+    radius: float,
+    outdir: str,
+    prefix: str = "scene",
+    include_terrain: bool = True,
+) -> list[str]:
+    """
+    Create one scene XML per scan position from a CSV file.
+
+    Parameters
+    ----------
+    outdir : str
+        Directory where the generated scene XML files are written.
+
+    CSV columns should include:
+    #Name, X, Y, Z, Roll, Pitch, Yaw
+    """
+    stem_files = sorted(str(Path(p)) for p in Path(stem_dir).glob("*.obj"))
+    leaf_files = sorted(str(Path(p)) for p in Path(leaf_dir).glob("*.obj"))
+    terrain_files = sorted(str(Path(p)) for p in Path(terrain_dir).glob("*.obj"))
+    if not terrain_files:
+        raise FileNotFoundError(f"No terrain OBJ files found in {terrain_dir}")
+    terrain_file = terrain_files[0]
+
+    df = pd.read_csv(path_scanpos)
+    required = ["#Name", "X", "Y", "Z", "Roll", "Pitch", "Yaw"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns in scan-pos CSV: {missing}")
+
+    written = []
+    outdir = str(Path(outdir))
+    Path(outdir).mkdir(parents=True, exist_ok=True)
+
+    for row in df.itertuples(index=False):
+        scan_name = str(getattr(row, "#Name"))
+        scan_pos = (float(row.X), float(row.Y))
+        scene_name = f"{prefix}_{scan_name.replace(' ', '_')}"
+        scene_path = str(Path(outdir) / f"{scene_name}.xml")
+        if include_terrain:
+            generate_scene_for_radius(
+                stem_files=stem_files,
+                leaf_files=leaf_files,
+                terrain_file=terrain_file,
+                scan_position=scan_pos,
+                radius=float(radius),
+                outpath=scene_path,
+                scene_name=scene_name,
+            )
+        else:
+            raise NotImplementedError("include_terrain=False is not currently supported for the radius scene builder.")
+        written.append(scene_path)
+
+    return written
+
+def generate_radius_scenes_from_grid(
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+    x_step: float,
+    y_step: float,
+    stem_dir: str,
+    leaf_dir: str,
+    terrain_dir: str,
+    radius: float,
+    outdir: str,
+    prefix: str = "scene",
+    z_level: float = 0.0,
+) -> list[str]:
+    """Create one scene XML per grid cell center within a rectangular scan grid.
+
+    outdir is the directory where the generated scene XML files are written.
+    """
+    if x_step <= 0 or y_step <= 0:
+        raise ValueError("x_step and y_step must be > 0.")
+    if xmin > xmax or ymin > ymax:
+        raise ValueError("Expected xmin <= xmax and ymin <= ymax.")
+
+    x_values = np.arange(xmin, xmax + 0.5 * x_step, x_step)
+    y_values = np.arange(ymin, ymax + 0.5 * y_step, y_step)
+
+    written = []
+    for y in y_values:
+        for x in x_values:
+            scene_name = f"{prefix}_{x:.3f}_{y:.3f}"
+            scene_path = str(Path(outdir) / f"{scene_name}.xml")
+            generate_scene_for_radius(
+                stem_files=sorted(str(Path(p)) for p in Path(stem_dir).glob("*.obj")),
+                leaf_files=sorted(str(Path(p)) for p in Path(leaf_dir).glob("*.obj")),
+                terrain_file=sorted(str(Path(p)) for p in Path(terrain_dir).glob("*.obj"))[0],
+                scan_position=(float(x), float(y)),
+                radius=float(radius),
+                outpath=scene_path,
+                scene_name=scene_name,
+            )
+            written.append(scene_path)
+    return written
+
 def rebuild_survey_legs_from_scanpos(
     path_survey: str,
     path_scanpos: str,
@@ -110,7 +287,6 @@ def rebuild_survey_legs_from_scanpos(
     Path(write_path).parent.mkdir(parents=True, exist_ok=True)
     tree.write(write_path, encoding="UTF-8", xml_declaration=True)
     return written
-
 
 def rebuild_survey_legs_from_grid(
     path_survey: str,
@@ -238,7 +414,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "outfile",
         type=str,
-        help="Output path for the rebuilt survey XML."
+        help=("Output path for the rebuilt survey XML. If split is used then this is a "
+              "prefix and the output will be written to multiple files as a prefix, the"
+              " next bit will be the scan number or the grid location (X and Y)."
+        )
+    )
+    parser.add_argument(
+        "--stem_dir",
+        type=str,
+        default=None,
+        help="Directory containing stem OBJ meshes (used when splitting scenes by scan radius)."
+    )
+    parser.add_argument(
+        "--leaf_dir",
+        type=str,
+        default=None,
+        help="Directory containing leaf OBJ meshes (used when splitting scenes by scan radius)."
+    )
+    parser.add_argument(
+        "--terrain_dir",
+        type=str,
+        default=None,
+        help="Directory containing terrain OBJ meshes (used when splitting scenes by scan radius)."
     )
     parser.add_argument(
         "--scan_pos",
@@ -265,8 +462,38 @@ if __name__ == "__main__":
         "--run_simulations",
         type=bool,
         default=False,
-        help="If set to true then the simulations start running. Only recommend if you know that the computer"
-             " has the memory resources to complete the simulation."
+        help=("If set to true then the simulations start running. Only recommend if you know that the computer"
+              " has the memory resources to complete the simulation."
+        )
+    )
+    parser.add_argument(
+        "--run_simulations_slurm",
+        type=bool,
+        default=False,
+        help=("If set to true then the simulations start running on a slurm cluster. Only recommend if you know"
+             " that the cluster has the memory resources to complete the simulation."
+        )
+    )
+    parser.add_argument(
+        "--slurm_args",
+        type=str,
+        help="If you want to run the simulations on a slurm cluster then you must specify the slurm arguments."
+    )
+    parser.add_argument(
+        "--split",
+        type=bool,
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help=("If set to true then the scan positions are split into radial sections. This is useful if the whole"
+             "scene does not fit into memory. If this is set to true then the radius must be specified."
+        )
+    )
+    parser.add_argument(
+        "--radius",
+        type=float,
+        help=("If you want to split the scan positions into radial sections then you must specify the radius of the scan"
+             " in scene units. This is only used if the split option is set to true."
+        )
     )
 
     args = parser.parse_args()
@@ -306,7 +533,104 @@ if __name__ == "__main__":
             tilt=bool(grid_pos[7])
         )
 
+    if args.radius:
+        radius = args.radius
+
+    if args.split and args.scan_pos:
+        if not args.radius:
+            raise IOError("If you want to split the scan positions "
+                          "into radial sections, you must "
+                          "specify the radius of the scan.")
+        if not args.stem_dir or not args.leaf_dir or not args.terrain_dir:
+            raise IOError("For split mode with scan positions, you must provide --stem_dir, --leaf_dir, and --terrain_dir.")
+
+        scan_pos = args.scan_pos
+        scene_dir = Path(outfile).parent / f"{Path(outfile).stem}_scene_parts"
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        scene_paths = generate_radius_scenes_from_csv(
+            path_scanpos=scan_pos,
+            stem_dir=args.stem_dir,
+            leaf_dir=args.leaf_dir,
+            terrain_dir=args.terrain_dir,
+            radius=radius,
+            outdir=str(scene_dir),
+        )
+
+        survey_dir = Path(outfile).parent / f"{Path(outfile).stem}_surveys"
+        survey_dir.mkdir(parents=True, exist_ok=True)
+
+        scan_df = pd.read_csv(scan_pos)
+        scan_ids = [int(_scan_id_from_name(str(name))) for name in scan_df["#Name"]]
+        for scan_id, scene_path in zip(scan_ids, scene_paths):
+            survey_path = survey_dir / f"{Path(scene_path).stem}_survey.xml"
+            rebuild_survey_legs_from_scanpos(
+                path_survey=survey_template,
+                path_scanpos=scan_pos,
+                outpath=str(survey_path),
+                scanposition_ids=[scan_id],
+            )
+
+    if args.split and args.grid_pos:
+        if not args.radius:
+            raise IOError("If you want to split the grid "
+                          "into radial sections, you must "
+                          "specify the radius of the scan.")
+        if not args.stem_dir or not args.leaf_dir or not args.terrain_dir:
+            raise IOError("For split mode with a grid, you must provide --stem_dir, --leaf_dir, and --terrain_dir.")
+
+        grid_pos = args.grid_pos
+        scene_dir = Path(outfile).parent / f"{Path(outfile).stem}_scene_parts"
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        scene_paths = generate_radius_scenes_from_grid(
+            xmin=grid_pos[0],
+            xmax=grid_pos[1],
+            ymin=grid_pos[2],
+            ymax=grid_pos[3],
+            x_step=grid_pos[4],
+            y_step=grid_pos[5],
+            stem_dir=args.stem_dir,
+            leaf_dir=args.leaf_dir,
+            terrain_dir=args.terrain_dir,
+            radius=radius,
+            outdir=str(scene_dir),
+        )
+
+        survey_dir = Path(outfile).parent / f"{Path(outfile).stem}_surveys"
+        survey_dir.mkdir(parents=True, exist_ok=True)
+
+        for scene_path in scene_paths:
+            scene_name = Path(scene_path).stem
+            survey_path = survey_dir / f"{scene_name}_survey.xml"
+            rebuild_survey_legs_from_grid(
+                path_survey=survey_template,
+                outpath=str(survey_path),
+                xmin=grid_pos[0],
+                xmax=grid_pos[1],
+                ymin=grid_pos[2],
+                ymax=grid_pos[3],
+                x_step=grid_pos[4],
+                y_step=grid_pos[5],
+                upright=bool(grid_pos[6]),
+                tilt=bool(grid_pos[7]),
+            )
+
     if args.run_simulations:
         subprocess.run(["$HELIOS", outfile, "--lasOutput"])
 
-    print(f"Wrote {n_legs} grid legs to: {outfile}")
+    if args.run_simulations_slurm:
+        if not args.slurm_args:
+            raise IOError("If you want to run the simulations on a slurm cluster"
+                          " then you must specify the slurm arguments.")
+        if not args.split:
+            subprocess.run(["sbatch", 
+                            slurm_args, 
+                            f"--output={outfile.split('/')[-1].split('.')[0]}.log", 
+                            f"--job-name={outfile.split('/')[-1].split('.')[0]}",
+                            "--wrap=$HELIOS" + outfile + "--lasOutput"])
+        else:
+            for i in range(len(n_sur)):
+                subprocess.run(["sbatch", 
+                                slurm_args, 
+                                f"--output={n_legs[i].split('/')[-1].split('.')[0]}.log", 
+                                f"--job-name={n_legs[i].split('/')[-1].split('.')[0]}",
+                                "--wrap=$HELIOS" + n_legs[i] + "--lasOutput"])
