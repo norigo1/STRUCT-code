@@ -404,6 +404,107 @@ def rebuild_survey_legs_from_grid(
     tree.write(write_path, encoding="UTF-8", xml_declaration=True)
     return written
 
+def rebuild_survey_leg_from_point(
+    path_survey: str,
+    outpath: str,
+    x: float,
+    y: float,
+    upright: bool=True,
+    tilt: bool=False,
+    scanner_template: str="tls",
+    name: str="",
+    scene: str="",
+    scene_name: str="",
+    platform_file: str="",
+    platform: str="",
+    scanner_file: str="",
+    scanner: str=""
+) -> int:
+    """
+    Build a scanner leg in a HELIOS survey XML based on x, y location.
+
+
+    Each generated leg contains:
+      - <platformSettings x="..." y="..." onGround="true" />
+      - <scannerSettings template="..." />
+
+    Args:
+        path_survey: Existing survey XML path used as template.
+        outpath: Output XML path to write.
+        x, y: Specific x and y locations for the scanner leg.
+        scanner_template: scannerSettings template value.
+        upright: 
+
+
+    Returns:
+        Number of <leg> entries written to the survey.
+    """
+    path_survey = str(Path(path_survey))
+    write_path = str(Path(outpath))
+
+    tree = ET.parse(path_survey)
+    root = tree.getroot()
+    survey = root.find("survey")
+    if survey is None:
+        raise ValueError("No <survey> element found in XML.")
+
+    for leg in list(survey.findall("leg")):
+        survey.remove(leg)
+
+    # change attributes in template if requested
+    if platform_file!="" and platform!="":
+        survey.set("platform", platform_file+"#"+platform)
+    if scanner_file!="" and scanner!="":
+        survey.set("scanner", scanner_file+"#"+scanner)
+    if name!="":
+        survey.set("name", name)
+    if scene!="":
+        survey.set("scene", scene+"#"+scene_name)
+    
+    # Remove existing legs and replace them with the specified point.
+    angles = []
+    if upright:
+        angles.append([0., 0., 0.])
+    if tilt:
+        angles.append([0., 90., 0.])
+
+    written = 0
+    for angle in angles:
+        leg = ET.SubElement(survey, "leg")
+        ET.SubElement(
+            leg,
+            "platformSettings",
+            {
+                "x": f"{float(x):.6f}",
+                "y": f"{float(y):.6f}",
+                "onGround": "true",
+          },
+        )
+        scanner_mount = ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
+        ET.SubElement(
+            scanner_mount,
+            "rot",
+            {"axis": "x", "angle_deg": f"{float(angle[0]):.6f}"},
+        )
+        ET.SubElement(
+            scanner_mount,
+            "rot",
+            {"axis": "y", "angle_deg": f"{float(angle[1]):.6f}"},
+        )
+        ET.SubElement(
+            scanner_mount,
+            "rot",
+            {"axis": "z", "angle_deg": f"{float(angle[2]):.6f}"},
+        )
+
+        ET.SubElement(leg, "scannerSettings", {"template": scanner_template})
+        written += 1
+
+    ET.indent(tree, space="    ")
+    Path(write_path).parent.mkdir(parents=True, exist_ok=True)
+    tree.write(write_path, encoding="UTF-8", xml_declaration=True)
+    return written
+
 
 if __name__ == "__main__":
     import argparse
@@ -461,7 +562,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--run_simulations",
         type=bool,
-        default=False,
+        action=argparse.BooleanOptionalAction,
         help=("If set to true then the simulations start running. Only recommend if you know that the computer"
               " has the memory resources to complete the simulation."
         )
@@ -469,7 +570,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--run_simulations_slurm",
         type=bool,
-        default=False,
+        action=argparse.BooleanOptionalAction,
         help=("If set to true then the simulations start running on a slurm cluster. Only recommend if you know"
              " that the cluster has the memory resources to complete the simulation."
         )
@@ -482,7 +583,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--split",
         type=bool,
-        default=False,
         action=argparse.BooleanOptionalAction,
         help=("If set to true then the scan positions are split into radial sections. This is useful if the whole"
              "scene does not fit into memory. If this is set to true then the radius must be specified."
@@ -495,6 +595,22 @@ if __name__ == "__main__":
              " in scene units. This is only used if the split option is set to true."
         )
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        help="Name attribute for the survey XML. Defaults to the values in the survey template."
+    )
+    parser.add_argument(
+        "--scene",
+        type=str,
+        help=("The scene file attribute for the survey XML. This should be the path to the scene file."
+              " Defaults to the values in the survey template.")
+    )
+    parser.add_argument(
+        "--scene_name",
+        type=str,
+        help="The scene name given in the scene file. Defaults to the values in the survey template."
+    )
 
     args = parser.parse_args()
 
@@ -505,20 +621,42 @@ if __name__ == "__main__":
                           " This should be called 'survey_template.xml'.")
     survey_template = args.path_survey_template
 
+    helios_dir = "/".join(os.environ["HELIOS"].split("/")[:-2])+"/helios/data/scanners_and_platforms/"
+
     if args.scan_pos and args.grid_pos:
         raise IOError("Can only use one out of 'scan_pos' and 'grid_pos'.")
     if not args.scan_pos and not args.grid_pos:
         raise IOError("Must define one of 'scan_pos' or 'grid_pos'.")
 
-    if args.scan_pos: 
+    if args.name:
+        name = args.name
+    else:
+        name = ""
+    if args.scene:
+        scene = args.scene
+    else:
+        scene = ""
+    if args.scene_name:
+        scene_name = args.scene_name
+    else:
+        scene_name = ""
+
+    if args.scan_pos and not args.split: 
         scan_pos = args.scan_pos
         n_legs = rebuild_survey_legs_from_scanpos(
             path_survey=survey_template,
             path_scanpos=scan_pos,
-            outpath=outfile
+            outpath=outfile,
+            platform_file=helios_dir+"platforms.xml",
+            platform="tripod",
+            scanner_file=helios_dir+"scanners_tls.xml",
+            scanner="riegl_vz400i",
+            name=name,
+            scene=scene,
+            scene_name=scene_name
         )
         
-    if args.grid_pos: 
+    if args.grid_pos and not args.split: 
         grid_pos = args.grid_pos
         n_legs = rebuild_survey_legs_from_grid(
             path_survey=survey_template,
@@ -530,7 +668,14 @@ if __name__ == "__main__":
             x_step=grid_pos[4],
             y_step=grid_pos[5],
             upright=bool(grid_pos[6]),
-            tilt=bool(grid_pos[7])
+            tilt=bool(grid_pos[7]),
+            platform_file=helios_dir+"platforms.xml",
+            platform="tripod",
+            scanner_file=helios_dir+"scanners_tls.xml",
+            scanner="riegl_vz400i",
+            name=name,
+            scene=scene,
+            scene_name=scene_name
         )
 
     if args.radius:
@@ -553,7 +698,7 @@ if __name__ == "__main__":
             leaf_dir=args.leaf_dir,
             terrain_dir=args.terrain_dir,
             radius=radius,
-            outdir=str(scene_dir),
+            outdir=str(scene_dir)
         )
 
         survey_dir = Path(outfile).parent / f"{Path(outfile).stem}_surveys"
@@ -561,6 +706,7 @@ if __name__ == "__main__":
 
         scan_df = pd.read_csv(scan_pos)
         scan_ids = [int(_scan_id_from_name(str(name))) for name in scan_df["#Name"]]
+        ######### change this to only have one scan location per survey file, i.e. one leg per survey file (can be upright and tilted)
         for scan_id, scene_path in zip(scan_ids, scene_paths):
             survey_path = survey_dir / f"{Path(scene_path).stem}_survey.xml"
             rebuild_survey_legs_from_scanpos(
@@ -568,6 +714,13 @@ if __name__ == "__main__":
                 path_scanpos=scan_pos,
                 outpath=str(survey_path),
                 scanposition_ids=[scan_id],
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i",
+                name=scene_path.stem,
+                scene=scene_path,
+                scene_name=scene_path.stem
             )
 
     if args.split and args.grid_pos:
@@ -592,7 +745,7 @@ if __name__ == "__main__":
             leaf_dir=args.leaf_dir,
             terrain_dir=args.terrain_dir,
             radius=radius,
-            outdir=str(scene_dir),
+            outdir=str(scene_dir)
         )
 
         survey_dir = Path(outfile).parent / f"{Path(outfile).stem}_surveys"
@@ -601,21 +754,36 @@ if __name__ == "__main__":
         for scene_path in scene_paths:
             scene_name = Path(scene_path).stem
             survey_path = survey_dir / f"{scene_name}_survey.xml"
-            rebuild_survey_legs_from_grid(
+            rebuild_survey_leg_from_point(
                 path_survey=survey_template,
                 outpath=str(survey_path),
-                xmin=grid_pos[0],
-                xmax=grid_pos[1],
-                ymin=grid_pos[2],
-                ymax=grid_pos[3],
-                x_step=grid_pos[4],
-                y_step=grid_pos[5],
+                x=float(scene_name.split('_')[-2]),
+                y=float(scene_name.split('_')[-1]),
                 upright=bool(grid_pos[6]),
                 tilt=bool(grid_pos[7]),
+                name=scene_name,
+                scene=scene_path,
+                scene_name=scene_name,
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i"
             )
 
     if args.run_simulations:
-        subprocess.run(["$HELIOS", outfile, "--lasOutput"])
+        if not args.split:
+            subprocess.run([os.environ['HELIOS'], 
+                            outfile, 
+                            "--lasOutput", 
+                            "--output", 
+                            "/".join(outfile.split("/")[:-1])+"/output/"])
+        else:
+            for survey_file in Path(survey_dir).glob("*.xml"):
+                subprocess.run([os.environ['HELIOS'], 
+                                survey_file, 
+                                "--lasOutput", 
+                                "--output", 
+                                "/".join(outfile.split("/")[:-1])+"/output/"])
 
     if args.run_simulations_slurm:
         if not args.slurm_args:
@@ -623,14 +791,14 @@ if __name__ == "__main__":
                           " then you must specify the slurm arguments.")
         if not args.split:
             subprocess.run(["sbatch", 
-                            slurm_args, 
+                            args.slurm_args, 
                             f"--output={outfile.split('/')[-1].split('.')[0]}.log", 
                             f"--job-name={outfile.split('/')[-1].split('.')[0]}",
-                            "--wrap=$HELIOS" + outfile + "--lasOutput"])
+                            f"--wrap={os.environ['HELIOS']} {outfile} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
         else:
-            for i in range(len(n_sur)):
-                subprocess.run(["sbatch", 
-                                slurm_args, 
-                                f"--output={n_legs[i].split('/')[-1].split('.')[0]}.log", 
-                                f"--job-name={n_legs[i].split('/')[-1].split('.')[0]}",
-                                "--wrap=$HELIOS" + n_legs[i] + "--lasOutput"])
+            for survey_file in Path(survey_dir).glob("*.xml"):
+                subprocess.run(["sbatch",
+                                args.slurm_args, 
+                                f"--output={survey_file.split('/')[-1].split('.')[0]}.log", 
+                                f"--job-name={survey_file.split('/')[-1].split('.')[0]}",
+                                f"--wrap={os.environ['HELIOS']} {survey_file} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
