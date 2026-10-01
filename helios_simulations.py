@@ -265,22 +265,7 @@ def rebuild_survey_legs_from_scanpos(
             {"x": f"{float(row.X):.6f}", "y": f"{float(row.Y):.6f}", "z": f"{float(row.Z):.6f}"},
         )
 
-        scanner_mount = ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "x", "angle_deg": f"{float(row.Roll):.6f}"},
-        )
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "y", "angle_deg": f"{float(row.Pitch):.6f}"},
-        )
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "z", "angle_deg": f"{float(row.Yaw):.6f}"},
-        )
+        ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
         written += 1
 
     ET.indent(tree, space="    ")
@@ -297,8 +282,6 @@ def rebuild_survey_legs_from_grid(
     ymax: float,
     x_step: float,
     y_step: float,
-    upright: bool=True,
-    tilt: bool=False,
     scanner_template: str="tls",
     name: str="",
     scene: str="",
@@ -359,45 +342,22 @@ def rebuild_survey_legs_from_grid(
     x_values = np.arange(xmin, xmax + 0.5 * x_step, x_step)
     y_values = np.arange(ymin, ymax + 0.5 * y_step, y_step)
 
-    angles = []
-    if upright:
-        angles.append([0., 0., 0.])
-    if tilt:
-        angles.append([0., 90., 0.])
-
     written = 0
-    for angle in angles:
-        for y in y_values:
-            for x in x_values:
-                leg = ET.SubElement(survey, "leg")
-                ET.SubElement(
-                    leg,
-                    "platformSettings",
-                    {
-                        "x": f"{float(x):.6f}",
-                        "y": f"{float(y):.6f}",
-                        "onGround": "true",
-                    },
-                )
-                scanner_mount = ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
-                ET.SubElement(
-                    scanner_mount,
-                    "rot",
-                    {"axis": "x", "angle_deg": f"{float(angle[0]):.6f}"},
-                )
-                ET.SubElement(
-                    scanner_mount,
-                    "rot",
-                    {"axis": "y", "angle_deg": f"{float(angle[1]):.6f}"},
-                )
-                ET.SubElement(
-                    scanner_mount,
-                    "rot",
-                    {"axis": "z", "angle_deg": f"{float(angle[2]):.6f}"},
-                )
-
-                ET.SubElement(leg, "scannerSettings", {"template": scanner_template})
-                written += 1
+    for y in y_values:
+        for x in x_values:
+            leg = ET.SubElement(survey, "leg")
+            ET.SubElement(
+                leg,
+                "platformSettings",
+                {
+                    "x": f"{float(x):.6f}",
+                    "y": f"{float(y):.6f}",
+                    "onGround": "true",
+                },
+            )
+            ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
+            ET.SubElement(leg, "scannerSettings", {"template": scanner_template})
+            written += 1
 
     ET.indent(tree, space="    ")
     Path(write_path).parent.mkdir(parents=True, exist_ok=True)
@@ -409,8 +369,6 @@ def rebuild_survey_leg_from_point(
     outpath: str,
     x: float,
     y: float,
-    upright: bool=True,
-    tilt: bool=False,
     scanner_template: str="tls",
     name: str="",
     scene: str="",
@@ -462,48 +420,22 @@ def rebuild_survey_leg_from_point(
         survey.set("scene", scene+"#"+scene_name)
     
     # Remove existing legs and replace them with the specified point.
-    angles = []
-    if upright:
-        angles.append([0., 0., 0.])
-    if tilt:
-        angles.append([0., 90., 0.])
-
-    written = 0
-    for angle in angles:
-        leg = ET.SubElement(survey, "leg")
-        ET.SubElement(
-            leg,
-            "platformSettings",
-            {
-                "x": f"{float(x):.6f}",
-                "y": f"{float(y):.6f}",
-                "onGround": "true",
+    leg = ET.SubElement(survey, "leg")
+    ET.SubElement(
+        leg,
+        "platformSettings",
+        {
+            "x": f"{float(x):.6f}",
+            "y": f"{float(y):.6f}",
+            "onGround": "true",
           },
         )
-        scanner_mount = ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "x", "angle_deg": f"{float(angle[0]):.6f}"},
-        )
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "y", "angle_deg": f"{float(angle[1]):.6f}"},
-        )
-        ET.SubElement(
-            scanner_mount,
-            "rot",
-            {"axis": "z", "angle_deg": f"{float(angle[2]):.6f}"},
-        )
-
-        ET.SubElement(leg, "scannerSettings", {"template": scanner_template})
-        written += 1
+    ET.SubElement(leg, "scannerMount", {"x": "0", "y": "0", "z": "0"})
+    ET.SubElement(leg, "scannerSettings", {"template": scanner_template})
 
     ET.indent(tree, space="    ")
     Path(write_path).parent.mkdir(parents=True, exist_ok=True)
     tree.write(write_path, encoding="UTF-8", xml_declaration=True)
-    return written
 
 
 if __name__ == "__main__":
@@ -545,11 +477,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--grid_pos",
-        nargs=8,
+        nargs=6,
         type=float,
-        help=("Grid settings in terms of xmin, xmax, ymin, ymax, xstep, ystep, upright, tilted."
-              "upright and tilt should be 1 or 0 depending on whether the scans should be done"
-              "in upright mode, tilt mode, or both - i.e. 1 0, 0 1, and 1 1 are the only options.")
+        help="Grid settings in terms of xmin, xmax, ymin, ymax, xstep, ystep."
     )
     parser.add_argument(
         "--path_survey_template", 
@@ -611,6 +541,18 @@ if __name__ == "__main__":
         type=str,
         help="The scene name given in the scene file. Defaults to the values in the survey template."
     )
+    parser.add_argument(
+        "--upright",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help="If set to true then the scans are done in upright mode."
+    )
+    parser.add_argument(
+        "--tilt",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help="If set to true then the scans are done in tilt mode."
+    )
 
     args = parser.parse_args()
 
@@ -643,40 +585,71 @@ if __name__ == "__main__":
 
     if args.scan_pos and not args.split: 
         scan_pos = args.scan_pos
-        n_legs = rebuild_survey_legs_from_scanpos(
-            path_survey=survey_template,
-            path_scanpos=scan_pos,
-            outpath=outfile,
-            platform_file=helios_dir+"platforms.xml",
-            platform="tripod",
-            scanner_file=helios_dir+"scanners_tls.xml",
-            scanner="riegl_vz400i",
-            name=name,
-            scene=scene,
-            scene_name=scene_name
-        )
+        if args.upright:
+            n_legs = rebuild_survey_legs_from_scanpos(
+                path_survey=survey_template,
+                path_scanpos=scan_pos,
+                outpath=outfile,
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i",
+                name=name,
+                scene=scene,
+                scene_name=scene_name
+            )
+        if args.tilt:
+            n_legs = rebuild_survey_legs_from_scanpos(
+                path_survey=survey_template,
+                path_scanpos=scan_pos,
+                outpath="/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml",
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod_tilt",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i",
+                name=name,
+                scene=scene,
+                scene_name=scene_name
+            )
         
     if args.grid_pos and not args.split: 
         grid_pos = args.grid_pos
-        n_legs = rebuild_survey_legs_from_grid(
-            path_survey=survey_template,
-            outpath=outfile,
-            xmin=grid_pos[0],
-            xmax=grid_pos[1],
-            ymin=grid_pos[2],
-            ymax=grid_pos[3],
-            x_step=grid_pos[4],
-            y_step=grid_pos[5],
-            upright=bool(grid_pos[6]),
-            tilt=bool(grid_pos[7]),
-            platform_file=helios_dir+"platforms.xml",
-            platform="tripod",
-            scanner_file=helios_dir+"scanners_tls.xml",
-            scanner="riegl_vz400i",
-            name=name,
-            scene=scene,
-            scene_name=scene_name
-        )
+        if args.upright:
+            n_legs = rebuild_survey_legs_from_grid(
+                path_survey=survey_template,
+                outpath=outfile,
+                xmin=grid_pos[0],
+                xmax=grid_pos[1],
+                ymin=grid_pos[2],
+                ymax=grid_pos[3],
+                x_step=grid_pos[4],
+                y_step=grid_pos[5],
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i",
+                name=name,
+                scene=scene,
+                scene_name=scene_name
+            )
+        if args.tilt:
+            n_legs = rebuild_survey_legs_from_grid(
+                path_survey=survey_template,
+                outpath="/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml",
+                xmin=grid_pos[0],
+                xmax=grid_pos[1],
+                ymin=grid_pos[2],
+                ymax=grid_pos[3],
+                x_step=grid_pos[4],
+                y_step=grid_pos[5],
+                platform_file=helios_dir+"platforms.xml",
+                platform="tripod_tilt",
+                scanner_file=helios_dir+"scanners_tls.xml",
+                scanner="riegl_vz400i",
+                name=name,
+                scene=scene,
+                scene_name=scene_name
+            )
 
     if args.radius:
         radius = args.radius
@@ -709,19 +682,34 @@ if __name__ == "__main__":
         ######### change this to only have one scan location per survey file, i.e. one leg per survey file (can be upright and tilted)
         for scan_id, scene_path in zip(scan_ids, scene_paths):
             survey_path = survey_dir / f"{Path(scene_path).stem}_survey.xml"
-            rebuild_survey_legs_from_scanpos(
-                path_survey=survey_template,
-                path_scanpos=scan_pos,
-                outpath=str(survey_path),
-                scanposition_ids=[scan_id],
-                platform_file=helios_dir+"platforms.xml",
-                platform="tripod",
-                scanner_file=helios_dir+"scanners_tls.xml",
-                scanner="riegl_vz400i",
-                name=scene_path.stem,
-                scene=scene_path,
-                scene_name=scene_path.stem
-            )
+            if args.upright:
+                rebuild_survey_legs_from_scanpos(
+                    path_survey=survey_template,
+                    path_scanpos=scan_pos,
+                    outpath=str(survey_path),
+                    scanposition_ids=[scan_id],
+                    platform_file=helios_dir+"platforms.xml",
+                    platform="tripod",
+                    scanner_file=helios_dir+"scanners_tls.xml",
+                    scanner="riegl_vz400i",
+                    name=scene_path.stem,
+                    scene=scene_path,
+                    scene_name=scene_path.stem
+                )
+            if args.tilt:
+                rebuild_survey_legs_from_scanpos(
+                    path_survey=survey_template,
+                    path_scanpos=scan_pos,
+                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+str(survey_path).split("/")[-1].split(".")[0]+"_tilt.xml",
+                    scanposition_ids=[scan_id],
+                    platform_file=helios_dir+"platforms.xml",
+                    platform="tripod_tilt",
+                    scanner_file=helios_dir+"scanners_tls.xml",
+                    scanner="riegl_vz400i",
+                    name=scene_path.stem,
+                    scene=scene_path,
+                    scene_name=scene_path.stem
+                )
 
     if args.split and args.grid_pos:
         if not args.radius:
@@ -754,29 +742,49 @@ if __name__ == "__main__":
         for scene_path in scene_paths:
             scene_name = Path(scene_path).stem
             survey_path = survey_dir / f"{scene_name}_survey.xml"
-            rebuild_survey_leg_from_point(
-                path_survey=survey_template,
-                outpath=str(survey_path),
-                x=float(scene_name.split('_')[-2]),
-                y=float(scene_name.split('_')[-1]),
-                upright=bool(grid_pos[6]),
-                tilt=bool(grid_pos[7]),
-                name=scene_name,
-                scene=scene_path,
-                scene_name=scene_name,
-                platform_file=helios_dir+"platforms.xml",
-                platform="tripod",
-                scanner_file=helios_dir+"scanners_tls.xml",
-                scanner="riegl_vz400i"
-            )
+            if args.upright:
+                rebuild_survey_leg_from_point(
+                    path_survey=survey_template,
+                    outpath=str(survey_path),
+                    x=float(scene_name.split('_')[-2]),
+                    y=float(scene_name.split('_')[-1]),
+                    name=scene_name,
+                    scene=scene_path,
+                    scene_name=scene_name,
+                    platform_file=helios_dir+"platforms.xml",
+                    platform="tripod",
+                    scanner_file=helios_dir+"scanners_tls.xml",
+                    scanner="riegl_vz400i"
+                )
+            if args.tilt:
+                rebuild_survey_leg_from_point(
+                    path_survey=survey_template,
+                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+str(survey_path).split("/")[-1].split(".")[0]+"_tilt.xml",
+                    x=float(scene_name.split('_')[-2]),
+                    y=float(scene_name.split('_')[-1]),
+                    name=scene_name,
+                    scene=scene_path,
+                    scene_name=scene_name,
+                    platform_file=helios_dir+"platforms.xml",
+                    platform="tripod_tilt",
+                    scanner_file=helios_dir+"scanners_tls.xml",
+                    scanner="riegl_vz400i"
+                )
 
     if args.run_simulations:
         if not args.split:
-            subprocess.run([os.environ['HELIOS'], 
-                            outfile, 
-                            "--lasOutput", 
-                            "--output", 
-                            "/".join(outfile.split("/")[:-1])+"/output/"])
+            if args.upright and args.tilt:
+                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+            elif args.upright:
+                outfiles = [outfile]
+            elif args.tilt:
+                outfiles = ["/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+            for outfile in outfiles:
+                subprocess.run([os.environ['HELIOS'], 
+                                outfile, 
+                                "--lasOutput", 
+                                "--output", 
+                                "/".join(outfile.split("/")[:-1])+"/output/"])
         else:
             for survey_file in Path(survey_dir).glob("*.xml"):
                 subprocess.run([os.environ['HELIOS'], 
@@ -790,11 +798,18 @@ if __name__ == "__main__":
             raise IOError("If you want to run the simulations on a slurm cluster"
                           " then you must specify the slurm arguments.")
         if not args.split:
-            subprocess.run(["sbatch", 
-                            args.slurm_args, 
-                            f"--output={outfile.split('/')[-1].split('.')[0]}.log", 
-                            f"--job-name={outfile.split('/')[-1].split('.')[0]}",
-                            f"--wrap={os.environ['HELIOS']} {outfile} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
+            if args.upright and args.tilt:
+                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+            elif args.upright:
+                outfiles = [outfile]
+            elif args.tilt:
+                outfiles = ["/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+            for outfile in outfiles:
+                subprocess.run(["sbatch", 
+                                args.slurm_args, 
+                                f"--output={outfile.split('/')[-1].split('.')[0]}.log", 
+                                f"--job-name={outfile.split('/')[-1].split('.')[0]}",
+                                f"--wrap={os.environ['HELIOS']} {outfile} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
         else:
             for survey_file in Path(survey_dir).glob("*.xml"):
                 subprocess.run(["sbatch",
