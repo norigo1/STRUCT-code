@@ -602,7 +602,7 @@ if __name__ == "__main__":
             n_legs = rebuild_survey_legs_from_scanpos(
                 path_survey=survey_template,
                 path_scanpos=scan_pos,
-                outpath="/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml",
+                outpath="/".join(outfile.split("/")[:-1])+"/"+".".join(outfile.split("/")[-1].split(".")[:-1])+"_tilt.xml",
                 platform_file=helios_dir+"platforms.xml",
                 platform="tripod_tilt",
                 scanner_file=helios_dir+"scanners_tls.xml",
@@ -635,7 +635,7 @@ if __name__ == "__main__":
         if args.tilt:
             n_legs = rebuild_survey_legs_from_grid(
                 path_survey=survey_template,
-                outpath="/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml",
+                outpath="/".join(outfile.split("/")[:-1])+"/"+".".join(outfile.split("/")[-1].split(".")[:-1])+"_tilt.xml",
                 xmin=grid_pos[0],
                 xmax=grid_pos[1],
                 ymin=grid_pos[2],
@@ -700,7 +700,7 @@ if __name__ == "__main__":
                 rebuild_survey_legs_from_scanpos(
                     path_survey=survey_template,
                     path_scanpos=scan_pos,
-                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+str(survey_path).split("/")[-1].split(".")[0]+"_tilt.xml",
+                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+".".join(str(survey_path).split("/")[-1].split(".")[:-1])+"_tilt.xml",
                     scanposition_ids=[scan_id],
                     platform_file=helios_dir+"platforms.xml",
                     platform="tripod_tilt",
@@ -759,7 +759,7 @@ if __name__ == "__main__":
             if args.tilt:
                 rebuild_survey_leg_from_point(
                     path_survey=survey_template,
-                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+str(survey_path).split("/")[-1].split(".")[0]+"_tilt.xml",
+                    outpath="/".join(str(survey_path).split("/")[:-1])+"/"+".".join(str(survey_path).split("/")[-1].split(".")[:-1])+"_tilt.xml",
                     x=float(scene_name.split('_')[-2]),
                     y=float(scene_name.split('_')[-1]),
                     name=scene_name,
@@ -774,11 +774,11 @@ if __name__ == "__main__":
     if args.run_simulations:
         if not args.split:
             if args.upright and args.tilt:
-                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+".".join(outfile.split("/")[-1].split(".")[:-1])+"_tilt.xml"]
             elif args.upright:
                 outfiles = [outfile]
             elif args.tilt:
-                outfiles = ["/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+                outfiles = ["/".join(outfile.split("/")[:-1])+"/"+".".join(outfile.split("/")[-1].split(".")[:-1])+"_tilt.xml"]
             for outfile in outfiles:
                 subprocess.run([os.environ['HELIOS'], 
                                 outfile, 
@@ -799,7 +799,7 @@ if __name__ == "__main__":
                           " then you must specify the slurm arguments.")
         if not args.split:
             if args.upright and args.tilt:
-                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+outfile.split("/")[-1].split(".")[0]+"_tilt.xml"]
+                outfiles = [outfile, "/".join(outfile.split("/")[:-1])+"/"+".".join(outfile.split("/")[-1].split(".")[:-1])+"_tilt.xml"]
             elif args.upright:
                 outfiles = [outfile]
             elif args.tilt:
@@ -807,13 +807,13 @@ if __name__ == "__main__":
             for outfile in outfiles:
                 subprocess.run(["sbatch", 
                                 args.slurm_args, 
-                                f"--output={outfile.split('/')[-1].split('.')[0]}.log", 
-                                f"--job-name={outfile.split('/')[-1].split('.')[0]}",
+                                f"--output={".".join(outfile.split('/')[-1].split('.')[:-1])}.log", 
+                                f"--job-name={".".join(outfile.split('/')[-1].split('.')[:-1])}",
                                 f"--wrap={os.environ['HELIOS']} {outfile} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
         else:
             for survey_file in Path(survey_dir).glob("*.xml"):
                 subprocess.run(["sbatch",
                                 args.slurm_args, 
-                                f"--output={survey_file.split('/')[-1].split('.')[0]}.log", 
-                                f"--job-name={survey_file.split('/')[-1].split('.')[0]}",
+                                f"--output={".".join(survey_file.split('/')[-1].split('.')[:-1])}.log", 
+                                f"--job-name={".".join(survey_file.split('/')[-1].split('.')[:-1])}",
                                 f"--wrap={os.environ['HELIOS']} {survey_file} --lasOutput --output {"/".join(outfile.split("/")[:-1])+"/output/"}"])
