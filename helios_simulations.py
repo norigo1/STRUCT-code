@@ -682,7 +682,7 @@ if __name__ == "__main__":
         ######### change this to only have one scan location per survey file, i.e. one leg per survey file (can be upright and tilted)
         for scan_id, scene_path in zip(scan_ids, scene_paths):
             survey_path = survey_dir / f"{Path(scene_path).stem}_survey.xml"
-            if args.upright:
+            if args.upright and scan_id % 2 == 0:
                 rebuild_survey_legs_from_scanpos(
                     path_survey=survey_template,
                     path_scanpos=scan_pos,
@@ -696,7 +696,7 @@ if __name__ == "__main__":
                     scene=scene_path,
                     scene_name=scene_path.stem
                 )
-            if args.tilt:
+            if args.tilt and scan_id % 2 == 1:
                 rebuild_survey_legs_from_scanpos(
                     path_survey=survey_template,
                     path_scanpos=scan_pos,
