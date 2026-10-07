@@ -7,10 +7,16 @@
 #
 ######################################################################
 
+import matplotlib.pyplot as plt
 import numpy as np
 from xml.etree import ElementTree as ET
+from xml.dom import minidom
 from scipy.spatial import ConvexHull
 from scipy import interpolate as interp
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+import pathlib
+import pdb
 
 # read in scene
 class SceneReader:
@@ -21,9 +27,12 @@ class SceneReader:
         """
         Read the scene from the specified path and return a Scene object.
         """
-        xml_tree = ET.parse(self.scene_path)
-        # get filepaths from the scene
-        filepaths = [elem.text for elem in xml_tree.iter('filepath')]
+        xml_tree = minidom.parse(self.scene_path)
+        ilist = xml_tree.getElementsByTagName("param")
+        filepaths = []
+        for i in ilist:
+            if i.attributes["key"].value == "filepath":
+                filepaths.append(i.attributes["value"].value)
         return filepaths
 
     def read_obj(self, filename):
@@ -35,7 +44,7 @@ class SceneReader:
         with open(filename, 'r') as f:
             for line in f:
                 if line.startswith('v '):
-                    vertices.append(list(map(float, line.strip().split()[1:])))
+                    vertices.append(list(map(float, line.strip().split()[1:]))[:3])
                 elif line.startswith('f '):
                     faces.append(list(map(int, line.strip().split()[1:])))
         return vertices, faces
@@ -56,7 +65,7 @@ class SceneReader:
                 if line.startswith('3 '):
                     faces.append(list(map(int, line.strip().split()[1:])))
                 else:
-                    vertices.append(list(map(float, line.strip().split())))
+                    vertices.append(list(map(float, line.strip().split()))[:3])
         return vertices, faces
 
 
@@ -69,29 +78,50 @@ class CanopyCover:
 
     def calculate_canopy_cover(self):
         """
-        Calculate the canopy cover of the scene by reading in the vertices and 
-        faces of the scene's vegetation objects.
+        Calculate the canopy cover of the scene by reading in the vertices of the
+        scene's vegetation objects. Each crown is represented by the convex hull of
+        its vertices in the x-y plane, and crowns that overlap are merged into a
+        single crown cluster.
+
+        Returns:
+        total_area: float
+            The area of the union of all the crowns, so that overlapping parts of
+            the crowns are only counted once.
+        ground_area: float
+            The area of the convex hull around all the crowns in the x-y plane.
+        xy_area: np.array
+            The x-y area of each individual crown in the scene.
+        cluster_points: list of lists
+            The vertices of each crown cluster, where a cluster is either a set of
+            overlapping crowns or a crown that overlaps no other. The top level is
+            the clusters, the next level is the vertices on the outline of that
+            cluster and the lowest level is the [x, y] coordinates of that vertex.
         """
-        xy_area = []
-        vertexx = []
+        sr = SceneReader(self.scene)
+        crowns = []
         for filepath in self.filepaths:
             if filepath.endswith('.obj'):
-                vertices, faces = SceneReader(self.scene).read_obj(filepath)
+                vertices, faces = sr.read_obj(filepath)
             elif filepath.endswith('.ply'):
-                vertices, faces = SceneReader(self.scene).read_ply(filepath)
+                vertices, faces = sr.read_ply(filepath)
             else:
                 raise ValueError(f"Unsupported file format: {filepath}")
-            
-            # calculate canopy cover from vertices and faces using convex hull over x and y coordinates 
-            cvh = ConvexHull(vertices)
-            vertexx.append(vertices)
-            xy_area.append(cvh.area)
-        
-        total_area = np.sum(xy_area)
 
-        cvh = ConvexHull(np.concatenate(vertexx))
-        ground_area = cvh.area
-        return total_area, ground_area, np.array(xy_area)
+            # represent the crown by the convex hull of its x and y coordinates
+            xy = np.array(vertices)[:, :2]
+            crowns.append(Polygon(xy[ConvexHull(xy).vertices]))
+        pdb.set_trace()
+        xy_area = np.array([crown.area for crown in crowns])
+
+        # merge the crowns, which leaves one polygon for each cluster of overlapping crowns
+        self.union = unary_union(crowns)
+        clusters = getattr(self.union, 'geoms', [self.union])
+        # the last coordinate of each outline is dropped as it repeats the first vertex
+        cluster_points = [[[x, y] for x, y in cluster.exterior.coords[:-1]] for cluster in clusters]
+
+        total_area = self.union.area
+        ground_area = self.union.convex_hull.area
+        return total_area, ground_area, xy_area, cluster_points
 
 
 # class to calculate leaf area index
@@ -169,18 +199,58 @@ class CanopyCoverSpatial:
         sr = SceneReader(scene)
         self.filepaths = sr.read_scene()
         cc = CanopyCover(scene)
-        _, _, self.xy_area = cc.calculate_canopy_cover()
+        _, _, self.xy_area, self.cluster_points = cc.calculate_canopy_cover()
+        self.union = cc.union
         mean_xyz = []
         for filepath in self.filepaths:
             if filepath.endswith('.obj'):
-                vertices, _ = SceneReader(self.scene).read_obj(filepath)
+                vertices, _ = sr.read_obj(filepath)
             elif filepath.endswith('.ply'):
-                vertices, _ = SceneReader(self.scene).read_ply(filepath)
+                vertices, _ = sr.read_ply(filepath)
             else:
                 raise ValueError(f"Unsupported file format: {filepath}")
             mean_xyz.append(np.mean(vertices, axis=0))
 
         self.locations = np.array(mean_xyz)[:, :2]
+
+    def plot_canopy_cover(self):
+        """
+        Plot the canopy cover spatially using matplotlib.
+        """
+        plt.scatter(self.locations[:, 0], self.locations[:, 1], s=(self.xy_area/np.pi)**0.5, alpha=0.5)
+        plt.xlabel('X Coordinate')
+        plt.ylabel('Y Coordinate')
+        plt.title('Canopy Cover Spatial Distribution')
+        plt.show()
+
+    def plot_canopy_union(self):
+        """
+        Plot the union of all the crowns (highlighted) against the area outside
+        of all the crowns. The outside area is bounded by the convex hull around
+        all the crowns in the x-y plane.
+        """
+
+        fig, ax = plt.subplots()
+        for crown_clust in self.cluster_points:
+            crown_clust = np.array(crown_clust)
+            ax.fill(crown_clust[:,0], crown_clust[:,1], c="g")
+        ax.set_aspect('equal')
+        ax.set_xlabel('X Coordinate')
+        ax.set_ylabel('Y Coordinate')
+        plt.show()
+
+    def plot_crown_size_distribution(self):
+        """
+        Plot the crown size profile, with the crowns ranked from smallest
+        to largest.
+        """
+        ranked = np.sort(self.xy_area)
+        order = np.arange(1, len(ranked) + 1)
+        plt.plot(order, ranked, marker='o', markersize=3)
+        plt.xlabel('Crown Rank (smallest to largest)')
+        plt.ylabel('Crown Area')
+        plt.title('Crown Size Profile')
+        plt.show()
 
 
 # class to remove trees from a scene and create a new one
@@ -206,7 +276,7 @@ class CanopyCoverNewScene:
         self.new_cc = new_cc
         cc = CanopyCover(scene)
         self.ccs = CanopyCoverSpatial(scene)
-        self.total_area, self.ground_area, self.xy_area = cc.calculate_canopy_cover()
+        self.total_area, self.ground_area, self.xy_area, self.cluster_points = cc.calculate_canopy_cover()
         self.current_cc = self.total_area / self.ground_area
         self.leaf_id = leaf_id
         self.terrain_id = terrain_id
