@@ -77,51 +77,108 @@ class CanopyCover:
         self.filepaths = sr.read_scene()
 
     def calculate_canopy_cover(self):
+        something = 0
+
+    def calculate_crown_area_fill_gaps(self, vertices, faces):
         """
-        Calculate the canopy cover of the scene by reading in the vertices of the
-        scene's vegetation objects. Each crown is represented by the convex hull of
-        its vertices in the x-y plane, and crowns that overlap are merged into a
-        single crown cluster.
+        Calculate the crown area of a vegetation object given its vertices and faces.
 
-        Returns:
-        total_area: float
-            The area of the union of all the crowns, so that overlapping parts of
-            the crowns are only counted once.
-        ground_area: float
-            The area of the convex hull around all the crowns in the x-y plane.
-        xy_area: np.array
-            The x-y area of each individual crown in the scene.
-        cluster_points: list of lists
-            The vertices of each crown cluster, where a cluster is either a set of
-            overlapping crowns or a crown that overlaps no other. The top level is
-            the clusters, the next level is the vertices on the outline of that
-            cluster and the lowest level is the [x, y] coordinates of that vertex.
+        CHECK THIS
         """
-        sr = SceneReader(self.scene)
-        crowns = []
-        for filepath in self.filepaths:
-            if filepath.endswith('.obj'):
-                vertices, faces = sr.read_obj(filepath)
-            elif filepath.endswith('.ply'):
-                vertices, faces = sr.read_ply(filepath)
-            else:
-                raise ValueError(f"Unsupported file format: {filepath}")
+        crown_area = 0.0
+        lines = []
+        for f,face in enumerate(faces):
+            v1 = np.array(vertices[:2][face[0] - 1])
+            v2 = np.array(vertices[:2][face[1] - 1])
+            v3 = np.array(vertices[:2][face[2] - 1])
+            # get the equation of the infinite line passing through
+            # each side of the triangle
+            # side 1
+            a1 = v2[1] - v1[1]
+            b1 = v1[0] - v2[0]
+            c1 = a1 * v1[0] + b1 * v1[1]
+            # side 2
+            a2 = v3[1] - v2[1]
+            b2 = v2[0] - v3[0]
+            c2 = a2 * v2[0] + b2 * v2[1]
+            # side 3
+            a3 = v1[1] - v3[1]
+            b3 = v3[0] - v1[0]
+            c3 = a3 * v3[0] + b3 * v3[1]
 
-            # represent the crown by the convex hull of its x and y coordinates
-            xy = np.array(vertices)[:, :2]
-            crowns.append(Polygon(xy[ConvexHull(xy).vertices]))
-        pdb.set_trace()
-        xy_area = np.array([crown.area for crown in crowns])
+            lines.append((a1, b1, c1, f, 0))
+            lines.append((a2, b2, c2, f, 1))
+            lines.append((a3, b3, c3, f, 2))
 
-        # merge the crowns, which leaves one polygon for each cluster of overlapping crowns
-        self.union = unary_union(crowns)
-        clusters = getattr(self.union, 'geoms', [self.union])
-        # the last coordinate of each outline is dropped as it repeats the first vertex
-        cluster_points = [[[x, y] for x, y in cluster.exterior.coords[:-1]] for cluster in clusters]
+        exterior_points = []
+        for l,line in enumerate(lines):
+            counter = 0
+            while counter < len(lines):
+                if l != counter:
+                    intersection = self.line_segment_intersection(line, lines[counter])
+                    if intersection is None:
+                        counter += 1
+                        continue
+                    else:
+                        # calculate the centre of the triangle the line belongs to
+                        f = line[3]
+                        v1 = np.array(vertices[:2][faces[f][0] - 1])
+                        v2 = np.array(vertices[:2][faces[f][1] - 1])
+                        v3 = np.array(vertices[:2][faces[f][2] - 1])
+                        centre = (v1 + v2 + v3) / 3.0
+                        exterior_points.append(centre)
+                        continue
+                else: 
+                    counter += 1
 
-        total_area = self.union.area
-        ground_area = self.union.convex_hull.area
-        return total_area, ground_area, xy_area, cluster_points
+        exterior_points = self.rotational_sort(np.array(exterior_points))
+        crown_area = Polygon(exterior_points).area
+        return crown_area, exterior_points
+
+    def calculate_crown_area_with_gaps(self, vertices, faces):
+        """
+        Calculate the crown area of a vegetation object given its vertices and faces.
+
+        CHECK THIS
+        """
+        # need to calculate the projected area of all the leaves without double counting the overlapping areas. This can be done by calculating the union of all the leaf polygons.
+        leaf_polygons = []
+        for f,face in enumerate(faces):
+            v1 = np.array(vertices[:2][face[0] - 1])
+            v2 = np.array(vertices[:2][face[1] - 1])
+            v3 = np.array(vertices[:2][face[2] - 1])
+            leaf_polygons.append(Polygon([v1, v2, v3]))
+        union_polygon = unary_union(leaf_polygons)
+        crown_area = union_polygon.area
+        return crown_area, union_polygon
+
+    def line_segment_intersection(self, line1, seg1, seg2):
+        """
+        Calculate the intersection point of a line given its equation and a line segment given its endpoints.
+
+        CHECK THIS
+        """
+        a1, b1 = line1
+        x1, y1 = seg1
+        x2, y2 = seg2
+        # Calculate the intersection point of the line and the line segment
+        denom = a1 * (y2 - y1) - b1 * (x2 - x1)
+        if denom == 0:
+            return None  # lines are parallel
+        t = (a1 * (y1 - 0) - b1 * (x1 - 0)) / denom
+        if t < 0 or t > 1:
+            return None  # intersection point is outside the line segment
+        x = x1 + t * (x2 - x1)
+        y = y1 + t * (y2 - y1)
+        return (x, y)
+
+    def rotational_sort(self, points):
+        """
+        Sort a list of points in counter-clockwise order around their centroid.
+        """
+        centroid = np.mean(points, axis=0)
+        angles = np.arctan2(points[:, 1] - centroid[1], points[:, 0] - centroid[0])
+        return points[np.argsort(angles)]
 
 
 # class to calculate leaf area index
