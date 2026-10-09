@@ -87,10 +87,11 @@ class CanopyCover:
         """
         crown_area = 0.0
         lines = []
+        vertices = np.array(vertices)[:,:2]
         for f,face in enumerate(faces):
-            v1 = np.array(vertices[:2][face[0] - 1])
-            v2 = np.array(vertices[:2][face[1] - 1])
-            v3 = np.array(vertices[:2][face[2] - 1])
+            v1 = vertices[face[0] - 1]
+            v2 = vertices[face[1] - 1]
+            v3 = vertices[face[2] - 1]
             # get the equation of the infinite line passing through
             # each side of the triangle
             # side 1
@@ -106,28 +107,37 @@ class CanopyCover:
             b3 = v3[0] - v1[0]
             c3 = a3 * v3[0] + b3 * v3[1]
 
-            lines.append((a1, b1, c1, f, 0))
-            lines.append((a2, b2, c2, f, 1))
-            lines.append((a3, b3, c3, f, 2))
+            lines.append((a1, b1, c1, f, 1, 0))
+            lines.append((a2, b2, c2, f, 2, 1))
+            lines.append((a3, b3, c3, f, 0, 2))
 
         exterior_points = []
         for l,line in enumerate(lines):
             counter = 0
+            print(f"Processing line {l+1}/{len(lines)}")
             while counter < len(lines):
                 if l != counter:
-                    intersection = self.line_segment_intersection(line, lines[counter])
+                    # get the endpoints of the line segment
+                    faceind = lines[counter][3] - 1
+                    vertindpos = lines[counter][4]
+                    vertindneg = lines[counter][5]
+                    # calculate the intersection of the line with the line segment
+                    intersection = self.line_segment_intersection(line, 
+                                                                  vertices[faceind + vertindneg], 
+                                                                  vertices[faceind + vertindpos]
+                                                                  )
                     if intersection is None:
                         counter += 1
                         continue
                     else:
                         # calculate the centre of the triangle the line belongs to
                         f = line[3]
-                        v1 = np.array(vertices[:2][faces[f][0] - 1])
-                        v2 = np.array(vertices[:2][faces[f][1] - 1])
-                        v3 = np.array(vertices[:2][faces[f][2] - 1])
+                        v1 = vertices[faces[f][0] - 1]
+                        v2 = vertices[faces[f][1] - 1]
+                        v3 = vertices[faces[f][2] - 1]
                         centre = (v1 + v2 + v3) / 3.0
                         exterior_points.append(centre)
-                        continue
+                        break
                 else: 
                     counter += 1
 
@@ -143,10 +153,11 @@ class CanopyCover:
         """
         # need to calculate the projected area of all the leaves without double counting the overlapping areas. This can be done by calculating the union of all the leaf polygons.
         leaf_polygons = []
+        vertices = np.array(vertices)[:,:2]
         for f,face in enumerate(faces):
-            v1 = np.array(vertices[:2][face[0] - 1])
-            v2 = np.array(vertices[:2][face[1] - 1])
-            v3 = np.array(vertices[:2][face[2] - 1])
+            v1 = vertices[face[0] - 1]
+            v2 = vertices[face[1] - 1]
+            v3 = vertices[face[2] - 1]
             leaf_polygons.append(Polygon([v1, v2, v3]))
         union_polygon = unary_union(leaf_polygons)
         crown_area = union_polygon.area
@@ -158,14 +169,14 @@ class CanopyCover:
 
         CHECK THIS
         """
-        a1, b1 = line1
+        a1, b1, c1 = line1[:3]
         x1, y1 = seg1
         x2, y2 = seg2
         # Calculate the intersection point of the line and the line segment
         denom = a1 * (y2 - y1) - b1 * (x2 - x1)
         if denom == 0:
             return None  # lines are parallel
-        t = (a1 * (y1 - 0) - b1 * (x1 - 0)) / denom
+        t = (a1 * (y1 - c1) - b1 * (x1 - c1)) / denom
         if t < 0 or t > 1:
             return None  # intersection point is outside the line segment
         x = x1 + t * (x2 - x1)
