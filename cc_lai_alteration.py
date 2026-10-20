@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, Delaunay
 from scipy import interpolate as interp
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -68,6 +68,54 @@ class SceneReader:
                     vertices.append(list(map(float, line.strip().split()))[:3])
         return vertices, faces
 
+    def read_tree(self, directories, globstring, hmin=2.0):
+        """
+        Read the tree file and return a list of vertices and faces.
+        
+        Parameters:
+        directories: list of str
+            The directories containing the folders of the wood and leaf elements of the tree.
+        globstring: str
+            The glob string to match the leaf and wood elements of the tree.
+        hmin: float
+            The minimum height of the tree to be considered.
+        
+        Returns:
+        list of tuples
+            Vertices, faces tuples of the combined tree elements that match the globstring 
+            and are above the minimum height.
+        """
+        vertl = [] 
+        facel = []
+        for directory in directories:
+            if directory[-1] != '/':
+                directory += '/'
+            for filepath in pathlib.Path(directory).glob(globstring):
+                if filepath.suffix == '.obj':
+                    vertices, faces = self.read_obj(str(filepath))
+                elif filepath.suffix == '.ply':
+                    vertices, faces = self.read_ply(str(filepath))
+                else:
+                    raise ValueError(f"Unsupported file format: {filepath}")
+                verts = np.array(vertices)
+                faces = np.array(faces)
+                hfilt = verts[:,2] > hmin
+                vfilt = verts[hfilt]
+                fvals = np.where(hfilt)[0] + 1
+                finds = []
+                for f in faces:
+                    if f[0] in fvals and f[1] in fvals and f[2] in fvals:
+                        finds.append(True)
+                    else:
+                        finds.append(False)
+
+                vertl.append(vfilt)
+                facel.append(faces[np.array(finds)])
+
+        verto = np.vstack(vertl)
+        faceo = np.vstack(facel) + len(vertl[0])  # adjust face indices for concatenated vertices
+        return verto, faceo        
+
 
 # class to calculate canopy cover
 class CanopyCover:
@@ -76,95 +124,133 @@ class CanopyCover:
         sr = SceneReader(scene)
         self.filepaths = sr.read_scene()
 
-    def calculate_canopy_cover(self):
-        something = 0
+    def calculate_canopy_cover(self, directories, globstring, iterable):
+        """
+        Calculate the canopy cover of the scene by reading in the vertices and faces 
+        of the scene's vegetation objects. Works for wood files where the stem is made
+        of facets. Will need a new method if the stem is made of cylinders.
 
-    def calculate_crown_area_fill_gaps(self, vertices, faces):
+        Parameters:
+        directories: list of str
+            The directories containing the folders of the wood and leaf elements of the tree.
+        globstring: str
+            The glob string to match the leaf and wood elements of the tree.
+            Note that globstring should have "{iter}" in it, which will be replaced by the 
+            elements of the iterable. e.g. "tree_{iter}_*" will match "tree_1_*_leaves.obj", 
+            "tree_1_*_wood.obj", etc.
+        iterable: list, array, etc.
+            An iterable of some kind that is fed to the globstring which will be used to 
+            match the leaf and wood elements of the tree.
         """
-        Calculate crown area from sides that do not intersect sides of other triangles.
+        crown_outlines = []
+        ca_total = 0.0
+        for i in iterable:
+            print(f"Processing tree {i/len(iterable)*100:.2f}%...", end='\r')
+            for directory in directories:
+                if directory[-1] != '/':
+                    directory += '/'
+                fp = str(pathlib.Path(directory).glob(globstring.format(iter=i)).__next__())
+            if fp.endswith('.obj'):
+                vertices, faces = SceneReader(self.scene).read_obj(fp)
+            elif fp.endswith('.ply'):
+                vertices, faces = SceneReader(self.scene).read_ply(fp)
+            else:
+                raise ValueError(f"Unsupported file format: {fp}")
+
+            ca, _ = self.calculate_crown_area_fill_gaps(vertices, faces)
+            crown_outlines.append(vertices)
+            ca_total += ca
+
+        crown = np.vstack([c for c in crown_outlines if len(c) > 0])
+        if len(crown) > 0:
+            canopy_outline = self.calculate_alpha_shape(crown)
+            if canopy_outline.geom_type == 'Polygon':
+                canopy_outline = np.array(canopy_outline.exterior.coords)[:-1]
+                canopy_ga = Polygon(canopy_outline).area
+            elif canopy_outline.geom_type == 'MultiPolygon':
+                largest = max(canopy_outline.geoms, key=lambda p: p.area)
+                canopy_outline = np.array(largest.exterior.coords)[:-1]
+                canopy_ga = Polygon(canopy_outline).area
+            else:
+                canopy_ga = 0.0
+        else:
+            canopy_ga = 0.0
+        
+        return ca_total, canopy_ga, ca_total / canopy_ga
+
+    def calculate_alpha_shape(self, points, alpha_radius=0.2):
         """
-        lines = []
+        Calculate the alpha shape (concave hull) of a set of points.
+        """
+        points = np.asarray(points)[:, :2]
+        if len(points) < 4:
+            return Polygon(points).convex_hull
+
+        tri = Delaunay(points)
+        a = points[tri.simplices[:, 0]]
+        b = points[tri.simplices[:, 1]]
+        c = points[tri.simplices[:, 2]]
+        la = np.linalg.norm(b - c, axis=1)
+        lb = np.linalg.norm(a - c, axis=1)
+        lc = np.linalg.norm(a - b, axis=1)
+        twice_area = np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+                            - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            circumradius = la * lb * lc / (2.0 * twice_area)
+        keep = np.isfinite(circumradius) & (circumradius <= alpha_radius)
+        shape = unary_union([Polygon(points[s]) for s in tri.simplices[keep]])
+        return shape if shape.is_valid else shape.buffer(0)
+
+    def calculate_crown_area_fill_gaps(self, vertices, faces, alpha_radius=None):
+        """
+        Calculate the crown area including gaps using an alpha shape.
+
+        The leaf vertices are projected onto the XY plane and Delaunay triangulated.
+        Triangles whose circumradius exceeds alpha_radius (i.e. alpha = 1 / alpha_radius)
+        are discarded, the remaining triangles are merged and interior holes are filled,
+        so gaps between leaves are closed while concavities in the outline are kept.
+
+        Parameters:
+        vertices, faces: OBJ-style vertices and 1-indexed triangular faces.
+        alpha_radius: maximum circumradius of a retained Delaunay triangle, in the
+            units of the vertices (default: 0.2 * longest side of the bounding box).
+            Large values approach the convex hull.
+        Returns:
+        crown_area: float
+            The area enclosed by the alpha shape (holes filled).
+        contour: np.array
+            The exterior of the largest component as (x, y) points.
+        """
         vertices = np.asarray(vertices)[:, :2]
-        for f,face in enumerate(faces):
-            face_vertices = [vertices[index - 1] for index in face]
-            for start_corner, end_corner in ((0, 1), (1, 2), (2, 0)):
-                start = face_vertices[start_corner]
-                end = face_vertices[end_corner]
-                a = end[1] - start[1]
-                b = start[0] - end[0]
-                c = a * start[0] + b * start[1]
-                lines.append((a, b, c, f, start_corner, end_corner))
-
-        exterior_points = []
-        for l,line in enumerate(lines):
-            print(f"Processing line {l+1}/{len(lines)}")
-            face_index = line[3]
-            face = faces[face_index]
-            start = vertices[face[line[4]] - 1]
-            end = vertices[face[line[5]] - 1]
-            side_vector = end - start
-            side_length_squared = np.dot(side_vector, side_vector)
-            if side_length_squared == 0:
-                continue
-
-            start_ray_intersects = False
-            end_ray_intersects = False
-            for other_line in lines:
-                if other_line[3] == face_index:
-                    continue
-
-                other_face = faces[other_line[3]]
-                other_start = vertices[other_face[other_line[4]] - 1]
-                other_end = vertices[other_face[other_line[5]] - 1]
-                other_vector = other_end - other_start
-                if np.dot(other_vector, other_vector) == 0:
-                    continue
-
-                cross = side_vector[0] * other_vector[1] - side_vector[1] * other_vector[0]
-                offset = other_start - start
-                if np.isclose(cross, 0.0) and np.isclose(
-                    side_vector[0] * offset[1] - side_vector[1] * offset[0], 0.0
-                ):
-                    other_start_position = np.dot(offset, side_vector) / side_length_squared
-                    other_end_position = np.dot(other_end - start, side_vector) / side_length_squared
-                    overlap_start = min(other_start_position, other_end_position)
-                    overlap_end = max(other_start_position, other_end_position)
-                    if overlap_start < 0.0 and not np.isclose(overlap_start, 0.0):
-                        start_ray_intersects = True
-                    if overlap_end > 1.0 and not np.isclose(overlap_end, 1.0):
-                        end_ray_intersects = True
-                    if start_ray_intersects and end_ray_intersects:
-                        break
-                    continue
-
-                intersection = self.line_segment_intersection(line, other_start, other_end)
-                if intersection is None:
-                    continue
-
-                side_position = np.dot(np.asarray(intersection) - start, side_vector) / side_length_squared
-                if side_position < 0.0 and not np.isclose(side_position, 0.0):
-                    start_ray_intersects = True
-                elif side_position > 1.0 and not np.isclose(side_position, 1.0):
-                    end_ray_intersects = True
-
-                if start_ray_intersects and end_ray_intersects:
-                    break
-
-            if not start_ray_intersects:
-                exterior_points.append(start)
-            if not end_ray_intersects:
-                exterior_points.append(end)
-
-        if not exterior_points:
+        faces = np.asarray(faces, dtype=int)
+        if len(faces) == 0:
             return 0.0, np.empty((0, 2))
 
-        exterior_points = np.unique(np.asarray(exterior_points), axis=0)
-        if len(exterior_points) < 3:
-            return 0.0, exterior_points
+        points = np.unique(vertices[np.unique(faces[:, :3]) - 1], axis=0)
+        if len(points) < 3:
+            return 0.0, np.empty((0, 2))
 
-        exterior_points = self.rotational_sort(exterior_points)
-        crown_area = Polygon(exterior_points).area
-        return crown_area, exterior_points
+        extent = np.max(points.max(axis=0) - points.min(axis=0))
+        if extent == 0:
+            return 0.0, np.empty((0, 2))
+        if alpha_radius is None:
+            alpha_radius = 0.2 * extent
+
+        try:
+            shape = self.calculate_alpha_shape(points, alpha_radius)
+        except Exception:
+            return 0.0, np.empty((0, 2))
+
+        polygons = list(shape.geoms) if hasattr(shape, 'geoms') else [shape]
+        polygons = [p for p in polygons if p.geom_type == 'Polygon' and not p.is_empty]
+        if not polygons:
+            return 0.0, np.empty((0, 2))
+
+        # fill holes: area of the exterior rings only
+        crown_area = sum(Polygon(p.exterior).area for p in polygons)
+        largest = max(polygons, key=lambda p: Polygon(p.exterior).area)
+        contour = np.asarray(largest.exterior.coords)[:-1]
+        return crown_area, contour
 
     def calculate_crown_area_with_gaps(self, vertices, faces):
         """
@@ -172,7 +258,7 @@ class CanopyCover:
         """
         leaf_polygons = []
         vertices = np.array(vertices)[:,:2]
-        for f,face in enumerate(faces):
+        for face in faces:
             v1 = vertices[face[0] - 1]
             v2 = vertices[face[1] - 1]
             v3 = vertices[face[2] - 1]
@@ -204,7 +290,8 @@ class CanopyCover:
 
     def rotational_sort(self, points):
         """
-        Order points by counter-clockwise angle, preferring nearby next points.
+        Order points greedily: the next point is chosen from the 10 nearest remaining
+        points using an equal weighting of counter-clockwise angle and distance.
         """
         points = np.asarray(points)
         if len(points) < 2:
@@ -213,8 +300,6 @@ class CanopyCover:
         centroid = np.mean(points, axis=0)
         offsets = points - centroid
         angles = np.arctan2(offsets[:, 1], offsets[:, 0])
-        extents = np.ptp(points, axis=0)
-        distance_threshold = 0.25 * np.min(extents)
         order = [int(np.argmin(angles))]
         remaining = set(range(len(points)))
         remaining.remove(order[0])
@@ -222,16 +307,17 @@ class CanopyCover:
         while remaining:
             current = order[-1]
             candidates = np.array(sorted(remaining), dtype=int)
-            angular_gaps = (angles[candidates] - angles[current]) % (2.0 * np.pi)
             distances = np.linalg.norm(points[candidates] - points[current], axis=1)
-            nearby_candidates = candidates[distances <= distance_threshold]
-            if len(nearby_candidates) > 0:
-                candidates = nearby_candidates
-                angular_gaps = (angles[candidates] - angles[current]) % (2.0 * np.pi)
-            next_point = int(candidates[np.argmin(angular_gaps)])
+            nearest = np.argsort(distances)[:10]
+            candidates = candidates[nearest]
+            distances = distances[nearest]
+            angular_gaps = (angles[candidates] - angles[current]) % (2.0 * np.pi)
+            max_distance = np.max(distances)
+            normalized_distances = distances / max_distance if max_distance > 0 else distances
+            scores = 0.25 * angular_gaps / (2.0 * np.pi) + 0.75 * normalized_distances
+            next_point = int(candidates[np.argmin(scores)])
             order.append(next_point)
             remaining.remove(next_point)
-
         return points[order]
 
 
