@@ -9,14 +9,16 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import shapely
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
 from scipy.spatial import ConvexHull, Delaunay
 from scipy import interpolate as interp
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPoint, Polygon
 from shapely.ops import unary_union
 import pathlib
 import pdb
+import time
 
 # read in scene
 class SceneReader:
@@ -99,6 +101,7 @@ class SceneReader:
                     raise ValueError(f"Unsupported file format: {filepath}")
                 verts = np.array(vertices)
                 faces = np.array(faces)
+                """
                 hfilt = verts[:,2] > hmin
                 vfilt = verts[hfilt]
                 fvals = np.where(hfilt)[0] + 1
@@ -108,12 +111,12 @@ class SceneReader:
                         finds.append(True)
                     else:
                         finds.append(False)
-
-                vertl.append(vfilt)
-                facel.append(faces[np.array(finds)])
+                """
+                vertl.append(verts)#vfilt)
+                facel.append(faces)#[np.array(finds)])
 
         verto = np.vstack(vertl)
-        faceo = np.vstack(facel) + len(vertl[0])  # adjust face indices for concatenated vertices
+        faceo = np.vstack((facel[0], facel[1] + len(vertl[0])))  # adjust face indices for concatenated vertices
         return verto, faceo        
 
 
@@ -121,8 +124,8 @@ class SceneReader:
 class CanopyCover:
     def __init__(self, scene):
         self.scene = scene
-        sr = SceneReader(scene)
-        self.filepaths = sr.read_scene()
+        self.sr = SceneReader(scene)
+        self.filepaths = self.sr.read_scene()
 
     def calculate_canopy_cover(self, directories, globstring, iterable):
         """
@@ -149,35 +152,28 @@ class CanopyCover:
             for directory in directories:
                 if directory[-1] != '/':
                     directory += '/'
-                fp = str(pathlib.Path(directory).glob(globstring.format(iter=i)).__next__())
-            if fp.endswith('.obj'):
-                vertices, faces = SceneReader(self.scene).read_obj(fp)
-            elif fp.endswith('.ply'):
-                vertices, faces = SceneReader(self.scene).read_ply(fp)
-            else:
-                raise ValueError(f"Unsupported file format: {fp}")
 
-            ca, _ = self.calculate_crown_area_fill_gaps(vertices, faces)
-            crown_outlines.append(vertices)
+            vertices, faces = self.sr.read_tree(directories, globstring.format(iter=i))
+            ca, co = self.calculate_crown_area_fill_gaps(vertices, faces)
+            crown_outlines.append(co)
             ca_total += ca
 
         crown = np.vstack([c for c in crown_outlines if len(c) > 0])
         if len(crown) > 0:
             canopy_outline = self.calculate_alpha_shape(crown)
+            pdb.set_trace()
             if canopy_outline.geom_type == 'Polygon':
-                canopy_outline = np.array(canopy_outline.exterior.coords)[:-1]
+                canopy_outline = np.array(canopy_outline.exterior.coords)
                 canopy_ga = Polygon(canopy_outline).area
             elif canopy_outline.geom_type == 'MultiPolygon':
-                largest = max(canopy_outline.geoms, key=lambda p: p.area)
-                canopy_outline = np.array(largest.exterior.coords)[:-1]
+                canopy_outline = np.array(canopy_outline.convex_hull.exterior.coords)
                 canopy_ga = Polygon(canopy_outline).area
             else:
                 canopy_ga = 0.0
         else:
             canopy_ga = 0.0
         
-        return ca_total, canopy_ga, ca_total / canopy_ga
-
+        return ca_total, canopy_ga, ca_total / canopy_ga, crown_outlines, canopy_outline
     def calculate_alpha_shape(self, points, alpha_radius=0.2):
         """
         Calculate the alpha shape (concave hull) of a set of points.
@@ -198,8 +194,15 @@ class CanopyCover:
         with np.errstate(divide='ignore', invalid='ignore'):
             circumradius = la * lb * lc / (2.0 * twice_area)
         keep = np.isfinite(circumradius) & (circumradius <= alpha_radius)
-        shape = unary_union([Polygon(points[s]) for s in tri.simplices[keep]])
+        triangle_coords = points[tri.simplices[keep]]
+        triangle_rings = shapely.linearrings(triangle_coords)
+        shape = shapely.union_all(shapely.polygons(triangle_rings))
         return shape if shape.is_valid else shape.buffer(0)
+
+    def calculate_concave_hull(self, points, ratio=0.0):
+        """Calculate Shapely's concave hull from point coordinates."""
+        points = np.asarray(points)[:, :2]
+        return shapely.concave_hull(MultiPoint(points), ratio=ratio)
 
     def calculate_crown_area_fill_gaps(self, vertices, faces, alpha_radius=None):
         """
@@ -249,7 +252,7 @@ class CanopyCover:
         # fill holes: area of the exterior rings only
         crown_area = sum(Polygon(p.exterior).area for p in polygons)
         largest = max(polygons, key=lambda p: Polygon(p.exterior).area)
-        contour = np.asarray(largest.exterior.coords)[:-1]
+        contour = np.asarray(largest.exterior.coords)#[:-1]
         return crown_area, contour
 
     def calculate_crown_area_with_gaps(self, vertices, faces):
