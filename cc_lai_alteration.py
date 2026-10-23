@@ -127,7 +127,7 @@ class CanopyCover:
         self.sr = SceneReader(scene)
         self.filepaths = self.sr.read_scene()
 
-    def calculate_canopy_cover(self, directories, globstring, iterable):
+    def calculate_canopy_cover(self, directories, globstring, iterable, ga="max_extent"):
         """
         Calculate the canopy cover of the scene by reading in the vertices and faces 
         of the scene's vegetation objects. Works for wood files where the stem is made
@@ -144,9 +144,14 @@ class CanopyCover:
         iterable: list, array, etc.
             An iterable of some kind that is fed to the globstring which will be used to 
             match the leaf and wood elements of the tree.
+        ga: str
+            The method to calculate the ground area. Options are "max_extent" (default), 
+            "convexhull", or "can_outline". "max_extent" is the area of the bounding box 
+            around all the crowns, "convex_hull" is the area of the convex hull around all 
+            the crowns, and "can_outline" is the area of the shape around all the crowns (if 
+            there is only one polygon for the whole canopy).
         """
         crown_outlines = []
-        ca_total = 0.0
         for i in iterable:
             print(f"Processing tree {i/len(iterable)*100:.2f}%...", end='\r')
             for directory in directories:
@@ -156,24 +161,60 @@ class CanopyCover:
             vertices, faces = self.sr.read_tree(directories, globstring.format(iter=i))
             ca, co = self.calculate_crown_area_fill_gaps(vertices, faces)
             crown_outlines.append(co)
-            ca_total += ca
 
-        crown = np.vstack([c for c in crown_outlines if len(c) > 0])
-        if len(crown) > 0:
-            canopy_outline = self.calculate_alpha_shape(crown)
-            pdb.set_trace()
+        multipolygon = False
+        if len(crown_outlines) > 0:
+            canopy_outline = shapely.union_all([Polygon(c) for c in crown_outlines])
             if canopy_outline.geom_type == 'Polygon':
-                canopy_outline = np.array(canopy_outline.exterior.coords)
-                canopy_ga = Polygon(canopy_outline).area
+                # area accounting for the holes in the interiror of the canopy
+                ca_total = canopy_outline.area
+                # outline of the whole canopy, ignoring the holes in the interior
+                ol = np.array(canopy_outline.exterior.coords)
             elif canopy_outline.geom_type == 'MultiPolygon':
-                canopy_outline = np.array(canopy_outline.convex_hull.exterior.coords)
-                canopy_ga = Polygon(canopy_outline).area
+                ol = []
+                clump_areas = []
+                for x in canopy_outline.geoms:
+                    olx = np.array(x.exterior.coords)
+                    ol.append(olx)
+                    clump_areas.append(x.area)
+                ca_total = np.sum(clump_areas)
+                ol = np.vstack(ol)
+                multipolygon = True
             else:
-                canopy_ga = 0.0
+                ca_total = 0.0
         else:
-            canopy_ga = 0.0
+            ca_total = 0.0
+
+        if ga == "max_extent":
+            minx, miny, maxx, maxy = canopy_outline.bounds
+            canopy_ga = (maxx - minx) * (maxy - miny)
+            ol = np.array([[minx, miny], 
+                           [minx, maxy], 
+                           [maxx, maxy], 
+                           [maxx, miny], 
+                           [minx, miny], 
+                           [minx, miny]])
+        elif multipolygon and ga == "can_outline":
+            print("Warning: Canopy outline is a MultiPolygon. Using convexhull instead.")
+            olpg = Polygon(ol).convex_hull
+            canopy_ga = olpg.area
+            ol = np.array(olpg.exterior.coords)
+        elif ga == "convexhull":
+            olpg = Polygon(ol).convex_hull
+            canopy_ga = olpg.area
+            ol = np.array(olpg.exterior.coords)
+        elif ga == "can_outline":
+            canopy_ga = Polygon(ol).area
+        else:
+            raise ValueError(f"Invalid ground area calculation method: {ga}. "
+                              "Choose from 'max_extent', 'convexhull', or 'can_outline'.")
         
-        return ca_total, canopy_ga, ca_total / canopy_ga, crown_outlines, canopy_outline
+        return (ca_total, 
+                canopy_ga, 
+                ca_total / canopy_ga, 
+                crown_outlines, 
+                ol)
+    
     def calculate_alpha_shape(self, points, alpha_radius=0.2):
         """
         Calculate the alpha shape (concave hull) of a set of points.
