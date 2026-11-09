@@ -9,6 +9,8 @@
 #
 #####################################################################
 
+"""Profile HELIOS process memory and associate usage with scene assets."""
+
 import argparse
 import glob
 import numpy as np
@@ -25,21 +27,54 @@ import helios_simulations as hs
 import pdb
 
 class Ram(ABC):
-    """Abstract interface for tracking process RAM usage."""
+    """Abstract interface for tracking process RAM usage.
+
+    Implementations report resident memory and sample it over time.
+    """
 
     @staticmethod
     @abstractmethod
     def get_ram_use(pid):
-        """Return the process RSS memory in MiB."""
+        """
+        Return the current resident memory used by a process.
+
+        Parameters:
+        -----------
+        pid : int
+              Process identifier to query.
+
+        Returns:
+        --------
+        ram_use : float
+                   Resident memory usage, in the units selected by the
+                   implementation.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def profile(self, pid, logtime=5, max_samples=None):
-        """Sample RAM use over time and return the profile array."""
+        """
+        Sample process memory over time.
+
+        Parameters:
+        -----------
+        pid : int
+              Process identifier to sample.
+        logtime : float, default=5
+                  Seconds between memory samples.
+        max_samples : int or None, default=None
+                      Maximum sample count; None allows sampling until process exit.
+
+        Returns:
+        --------
+        profile : np.ndarray, float
+                  Memory samples collected by the implementation.
+        """
         raise NotImplementedError
 
 
 class LogRAM(Ram):
+    """Sample and store a process's resident memory usage."""
 
     def __init__(self, pid, logtime=5, max_samples=None):
         """
@@ -67,7 +102,18 @@ class LogRAM(Ram):
     @staticmethod
     def get_ram_use(pid):
         """
-        Gets the RAM usage based on the PID, returns 0 if the process ended.
+        Get a process's resident memory usage.
+
+        Parameters:
+        -----------
+        pid : int
+              Process identifier to query.
+
+        Returns:
+        --------
+        ram_use : float
+                   Resident memory usage in decimal gigabytes, or zero when
+                   the process is unavailable or access is denied.
         """
         try:
             ram = psutil.Process(pid).memory_info().rss / (1024**2)
@@ -76,7 +122,23 @@ class LogRAM(Ram):
         return float(ram)*0.001  # Convert to GB
 
     def profile(self, pid, logtime=5, max_samples=None):
-        """Sample RAM usage until the process exits or max_samples is reached."""
+        """
+        Sample RAM usage until the process exits or the sample limit is reached.
+
+        Parameters:
+        -----------
+        pid : int
+              Process identifier to sample.
+        logtime : float, default=5
+                  Seconds between memory samples.
+        max_samples : int or None, default=None
+                      Maximum number of samples; None samples until exit.
+
+        Returns:
+        --------
+        ram_profile : np.ndarray, float
+                      Collected memory samples in decimal gigabytes.
+        """
         ram_profile = []
         self.start_time = time.time()
 
@@ -101,6 +163,7 @@ class LogRAM(Ram):
 
 
 class GetSpatials:
+    """Read OBJ meshes and calculate their coordinate extents and centroids."""
 
     def __init__(self, stem_dir, leaf_dir, terrain_dir):
         """
@@ -127,7 +190,19 @@ class GetSpatials:
         self.terrf,  self.terr_stats = self.get_spatial(terrain_file)
 
     def read_file(self, fname):
-        """Read a standard Helios obj file and retrieve the vertex points"""
+        """
+        Read vertex coordinates from a Helios OBJ file.
+
+        Parameters:
+        -----------
+        fname : str
+                Path to the OBJ file.
+
+        Returns:
+        --------
+        vertices : np.ndarray, float
+                   XYZ coordinates parsed from the mesh.
+        """
         op = open(fname).readlines()
         vertices = []
         for x in op:
@@ -138,7 +213,22 @@ class GetSpatials:
         return np.array(vertices).astype(float)
         
     def get_spatial(self, fnames):
-        """Get spatial location and extent of directory of obj files"""
+        """
+        Calculate bounds and mean coordinates for each OBJ file.
+
+        Parameters:
+        -----------
+        fnames : iterable of str
+                 OBJ file paths to process.
+
+        Returns:
+        --------
+        filenames : iterable of str
+                    Input file paths.
+        statistics : np.ndarray, float
+                     Per file, columns contain minimum, maximum, and mean
+                     coordinates for each axis.
+        """
         vals = []
         for f in fnames:
             verts = self.read_file(f)
@@ -152,10 +242,31 @@ class GetSpatials:
 
 
 class TrackSceneElementsRAM:
+    """Run isolated HELIOS scenes to measure per-asset RAM use."""
 
     def __init__(self, stem_dir, leaf_dir, terrain_dir, survey_template, tempdir="./temp/"):
         """
-        Class to track the RAM of each scene element
+        Measure RAM usage for each stem, leaf, and terrain mesh.
+
+        Parameters:
+        -----------
+        stem_dir : str
+                   Directory containing stem OBJ files.
+        leaf_dir : str
+                   Directory containing leaf OBJ files.
+        terrain_dir : str
+                      Directory containing terrain OBJ files.
+        survey_template : str
+                          Path to the HELIOS survey XML template.
+        tempdir : str, default='./temp/'
+                  Directory used to store temporary scenes and surveys. It must
+                  not already exist.
+
+        Returns:
+        --------
+        None
+            Stores per-asset RAM measurements in ``ram`` and asset paths in
+            ``fnames``.
         """
         if stem_dir[-1]!="/": stem_dir+="/"
         if leaf_dir[-1]!="/": leaf_dir+="/"
@@ -225,8 +336,10 @@ class TrackSceneElementsRAM:
 
         Returns:
         --------
-        scene_fname : str
-                      The output filepath of the newly created scene
+        scene_path : str
+                     Generated scene XML path.
+        scene_name : str
+                     Scene name passed to the HELIOS scene builder.
         """
         outdir = os.path.abspath(outdir)
         os.makedirs(outdir, exist_ok=True)
@@ -249,6 +362,11 @@ class TrackSceneElementsRAM:
                      Filename for the scene to simulate
         scene_name : str
                      Name of the scene, also used for the filename of the scene
+
+        Returns:
+        --------
+        survey_path : str
+                      Path to the generated survey XML.
         """
         outdir = os.path.abspath(outdir)
         os.makedirs(outdir, exist_ok=True)
@@ -273,6 +391,12 @@ class TrackSceneElementsRAM:
         -----------
         survey     : str
                      Filename for the survey to run
+
+        Returns:
+        --------
+        max_ram : float
+                  Maximum sampled RAM usage of the HELIOS process in decimal
+                  gigabytes.
         """
         helios_bin = os.environ.get("HELIOS")
         if not helios_bin:
@@ -317,4 +441,3 @@ if __name__ == "__main__":
         for fname, ram in zip(tracker.fnames, tracker.ram / 1000.):
             file_stats = spatial_stats[np.where(spatial_f == fname)[0][0]]
             f.write(f"{fname},{file_stats[0]}, {file_stats[1]}, {file_stats[2]}, {ram}\n")
-

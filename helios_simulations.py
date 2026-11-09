@@ -5,6 +5,8 @@
 # Adaptation by N. Origo (05/08/2026)
 ################################################################################################
 
+"""Generate HELIOS scenes and surveys from scan positions and spatial grids."""
+
 import os
 import re
 import subprocess
@@ -58,6 +60,33 @@ def generate_scene_for_radius(
     a specified radius of the scan position.
 
     The terrain is always included unconditionally. Stem and leaf parts share the same part ID.
+
+    Parameters:
+    -----------
+    stem_files : iterable of str
+                 Paths to stem OBJ meshes.
+    leaf_files : iterable of str
+                 Paths to leaf OBJ meshes, matched to stems by filename.
+    terrain_file : str
+                   Path to the terrain OBJ mesh.
+    scan_position : tuple of float
+                    XY coordinates of the scan position.
+    radius : float
+             Maximum centroid distance for including a stem and its matching leaves.
+    outpath : str
+              Destination path for the generated scene XML.
+    scene_name : str
+                 Name assigned to the generated HELIOS scene.
+
+    Returns:
+    --------
+    parts : list of tuple[int, str]
+            Part identifiers and mesh paths included in the scene.
+
+    Raises:
+    -------
+    ValueError
+        If radius is negative.
     """
     if radius < 0:
         raise ValueError("radius must be >= 0.")
@@ -114,13 +143,38 @@ def generate_radius_scenes_from_csv(
     """
     Create one scene XML per scan position from a CSV file.
 
-    Parameters
-    ----------
+    Parameters:
+    -----------
+    path_scanpos : str
+                   CSV path containing scan positions and orientation columns.
+    stem_dir : str
+               Directory containing stem OBJ files.
+    leaf_dir : str
+               Directory containing leaf OBJ files.
+    terrain_dir : str
+                  Directory containing terrain OBJ files.
+    radius : float
+             Radius used to select tree meshes around each scan position.
     outdir : str
-        Directory where the generated scene XML files are written.
+             Directory where scene XML files are written.
+    prefix : str, default='scene'
+             Prefix used for generated scene names.
+    include_terrain : bool, default=True
+                      Whether terrain is included. False is not implemented.
 
-    CSV columns should include:
-    #Name, X, Y, Z, Roll, Pitch, Yaw
+    Returns:
+    --------
+    scene_paths : list of str
+                  Paths to generated scene XML files.
+
+    Raises:
+    -------
+    FileNotFoundError
+        If the terrain directory contains no OBJ file.
+    ValueError
+        If required scan-position CSV columns are missing.
+    NotImplementedError
+        If include_terrain is False.
     """
     stem_files = sorted(str(Path(p)) for p in Path(stem_dir).glob("*.obj"))
     leaf_files = sorted(str(Path(p)) for p in Path(leaf_dir).glob("*.obj"))
@@ -175,9 +229,35 @@ def generate_radius_scenes_from_grid(
     prefix: str = "scene",
     z_level: float = 0.0,
 ) -> list[str]:
-    """Create one scene XML per grid cell center within a rectangular scan grid.
+    """
+    Create one scene XML per grid point in a rectangular scan grid.
 
-    outdir is the directory where the generated scene XML files are written.
+    Parameters:
+    -----------
+    xmin, xmax, ymin, ymax : float
+                             Inclusive XY bounds of the grid.
+    x_step, y_step : float
+                     Positive spacing between adjacent grid points.
+    stem_dir, leaf_dir, terrain_dir : str
+                                     Directories containing the respective OBJ meshes.
+    radius : float
+             Radius used to select tree meshes around each grid point.
+    outdir : str
+             Directory where the generated scene XML files are written.
+    prefix : str, default='scene'
+             Prefix used for generated scene names.
+    z_level : float, default=0.0
+              Retained for compatibility; scene selection uses XY coordinates.
+
+    Returns:
+    --------
+    scene_paths : list of str
+                  Paths to generated scene XML files.
+
+    Raises:
+    -------
+    ValueError
+        If grid spacing is non-positive or bounds are reversed.
     """
     if x_step <= 0 or y_step <= 0:
         raise ValueError("x_step and y_step must be > 0.")
@@ -215,16 +295,29 @@ def rebuild_survey_legs_from_scanpos(
     Replace all existing <leg> nodes in a HELIOS survey XML using scan positions from CSV.
 
 
-    Args:
-        path_survey: Path to source survey XML file used as template.
-        path_scanpos: Path to scan position CSV with columns #Name, X, Y, Z, Roll, Pitch, Yaw.
-        outpath: Output path for the rebuilt survey XML. If None, overwrite path_survey.
-        scanposition_ids: Optional iterable of IDs parsed from Name (ScanPos###).
-            If None, all scan positions are used.
-        scanner_template: scannerSettings template value (default: "tls").
+    Parameters:
+    -----------
+    path_survey : str
+                  Source survey XML used as a template.
+    path_scanpos : str
+                   CSV containing #Name, X, Y, Z, Roll, Pitch, and Yaw columns.
+    outpath : str or None, default=None
+              Output survey XML path; None overwrites path_survey.
+    scanposition_ids : iterable of int or None, default=None
+                       Optional scan IDs parsed from ScanPos### names.
+    scanner_template : str, default='tls'
+                       Template assigned to each generated scannerSettings element.
 
     Returns:
-        Number of <leg> entries written to the survey.
+    --------
+    written : int
+              Number of survey legs written.
+
+    Raises:
+    -------
+    ValueError
+        If the source has no survey element, required CSV columns are absent, or
+        no scan positions remain after filtering.
     """
     path_survey = str(Path(path_survey))
     path_scanpos = str(Path(path_scanpos))
@@ -299,17 +392,37 @@ def rebuild_survey_legs_from_grid(
       - <platformSettings x="..." y="..." onGround="true" />
       - <scannerSettings template="..." />
 
-    Args:
-        path_survey: Existing survey XML path used as template.
-        outpath: Output XML path to write.
-        xmin, xmax, ymin, ymax: Grid bounds (inclusive when aligned with step).
-        x_step, y_step: Positive grid spacing for x and y.
-        scanner_template: scannerSettings template value.
-        upright: 
-
+    Parameters:
+    -----------
+    path_survey : str
+                  Existing survey XML path used as template.
+    outpath : str
+              Destination path for the generated survey XML.
+    xmin, xmax, ymin, ymax : float
+                             Inclusive XY grid bounds when aligned with the step.
+    x_step, y_step : float
+                     Positive grid spacing along the corresponding axes.
+    scanner_template : str, default='tls'
+                       Template assigned to generated scannerSettings elements.
+    name : str, default=''
+           Optional survey name.
+    scene, scene_name : str, default=''
+                       Optional scene reference and scene identifier.
+    platform_file, platform : str, default=''
+                              Optional platform file and platform identifier.
+    scanner_file, scanner : str, default=''
+                             Optional scanner file and scanner identifier.
 
     Returns:
-        Number of <leg> entries written to the survey.
+    --------
+    written : int
+              Number of survey legs written.
+
+    Raises:
+    -------
+    ValueError
+        If grid spacing is non-positive, bounds are reversed, or the XML has no
+        survey element.
     """
     if x_step <= 0 or y_step <= 0:
         raise ValueError("x_step and y_step must be > 0.")
@@ -386,16 +499,34 @@ def rebuild_survey_leg_from_point(
       - <platformSettings x="..." y="..." onGround="true" />
       - <scannerSettings template="..." />
 
-    Args:
-        path_survey: Existing survey XML path used as template.
-        outpath: Output XML path to write.
-        x, y: Specific x and y locations for the scanner leg.
-        scanner_template: scannerSettings template value.
-        upright: 
-
+    Parameters:
+    -----------
+    path_survey : str
+                  Existing survey XML path used as template.
+    outpath : str
+              Destination path for the generated survey XML.
+    x, y : float
+           XY coordinates for the single scanner leg.
+    scanner_template : str, default='tls'
+                       Template assigned to the generated scannerSettings element.
+    name : str, default=''
+           Optional survey name.
+    scene, scene_name : str, default=''
+                       Optional scene reference and scene identifier.
+    platform_file, platform : str, default=''
+                              Optional platform file and platform identifier.
+    scanner_file, scanner : str, default=''
+                             Optional scanner file and scanner identifier.
 
     Returns:
-        Number of <leg> entries written to the survey.
+    --------
+    None
+        Writes the survey XML with one generated leg.
+
+    Raises:
+    -------
+    ValueError
+        If the source XML has no survey element.
     """
     path_survey = str(Path(path_survey))
     write_path = str(Path(outpath))

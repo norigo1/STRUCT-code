@@ -7,6 +7,8 @@
 #
 ##############################################################
 
+"""Prepare mesh-derived rasters and run or inspect Occpy voxel outputs."""
+
 import glob
 import numpy as np
 from osgeo import gdal
@@ -16,14 +18,19 @@ import scipy
 
 from PIL import Image
 
+from scene_io import read_obj_mesh
+
 
 class Preparation:
+    """Compatibility placeholder for Occpy data preparation."""
 
     def __init__(self):
+        """Initialize the placeholder without preparing any data."""
         something = 0
 
 
 class RunOccpy:
+    """Run Occpy ray tracing and retain its normalized voxel outputs."""
 
     def __init__(self, config):
         """
@@ -42,8 +49,8 @@ class RunOccpy:
             delimiter=",",
             hdr_scanpos_id='#Name',
             hdr_x='X',
-            hdr_x='Y',
-            hdr_x='Z',
+            hdr_y='Y',
+            hdr_z='Z',
             sens_pos_id_offset=0
         )
         self.occpy.do_raytracing()
@@ -204,6 +211,7 @@ class RunOccpy:
 
 
 class ModelBoundaries:
+    """Generate terrain and surface rasters from scene mesh points."""
 
     def __init__(self, mesh_dir, terrain_fname=None, fmt="obj"):
         """
@@ -247,6 +255,11 @@ class ModelBoundaries:
         -----------
         fout : str
                Filepath to save the output tiff file to 
+
+        Returns:
+        --------
+        None
+            Writes the terrain raster to fout.
         """
         terrain_points = Reader(self.terrain)
         npix = len(terrain_points)**0.5
@@ -270,6 +283,11 @@ class ModelBoundaries:
         -----------
         fout : str
                Filepath to save the output tiff file to 
+
+        Returns:
+        --------
+        None
+            Writes the surface raster to fout.
         """
         terrain_points = Reader(self.terrain)
         npix = len(terrain_points)**0.5
@@ -322,6 +340,11 @@ class ModelBoundaries:
                    Pixel resolution x
         pix_resy : float
                    Pixel resolution y
+
+        Returns:
+        --------
+        None
+            Writes a georeferenced copy of the input raster.
         """
         ds = gdal.Open(fname, gdal.GA_Updates)
         fname_spl = fname.split(".")
@@ -336,6 +359,7 @@ class ModelBoundaries:
         geotransform = None
 
 class Reader:
+    """Read mesh vertices and scanner positions from supported scene files."""
 
     @staticmethod
     def obj_reader(obj_file):
@@ -353,15 +377,8 @@ class Reader:
                    n x 3 array of floats containing the vertices of all points
                    in the obj file
         """
-        op = open(obj_file).readlines()
-        points = []
-
-        for j,line in enumerate(op):
-            if line[0]=="v":
-                points.append(line.split()[1:4])
-
-        points = np.array(points).astype(float)
-        return points
+        vertices, _ = read_obj_mesh(obj_file)
+        return np.asarray(vertices, dtype=float)
 
     @staticmethod
     def ply_reader(ply_file):
@@ -380,7 +397,11 @@ class Reader:
                    in the ply file
         """
         op = plyfile.PlyData.read(ply_file)
-        points = np.column_stack((op["vertex"]["x"], ["vertex"]["y"], ["vertex"]["z"]))
+        points = np.column_stack((
+            op["vertex"]["x"],
+            op["vertex"]["y"],
+            op["vertex"]["z"],
+        ))
         return points
 
     @staticmethod
@@ -400,11 +421,13 @@ class Reader:
 
         Returns:
         --------
-        scan_pos : np.arr, float
-                   n x 3 array of floats containing the x, y and z locations of the scanner position
-                   in each column
+        scan_pos : np.ndarray, float or None
+                   When write_to_scanpos is False, n x 3 array with one XYZ
+                   scan position per row. When True, writes ScanPositions.txt
+                   beside xml_file and returns None.
         """
-        op = open(xml_file, "r").readlines()
+        with open(xml_file, "r", encoding="utf-8") as platform_file:
+            op = platform_file.readlines()
         positions = []
         for line in op:
             nline = line.strip()
@@ -478,6 +501,12 @@ def OccpyConfig(
                     Whether the data is single return or multi return
     is_mobile     : bool, default=False
                     Flag to tell Occpy that the platform moves and therefore has a trajectory  
+
+    Returns:
+    --------
+    config : dict
+             Configuration dictionary containing the supplied input paths,
+             voxel settings, plot dimensions, and processing options.
     """
     tif_in = {'DTM': DTM_in, 'DSM': DSM_in}
     config = {

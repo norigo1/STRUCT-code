@@ -60,7 +60,23 @@ import cc_lai_alteration as lai_module
 
 
 def write_ascii_ply(path, vertices, faces):
-    """Write a minimal triangular ASCII PLY mesh with zero-based face indices."""
+    """
+    Write a minimal triangular ASCII PLY mesh.
+
+    Parameters:
+    -----------
+    path : str or pathlib.Path
+           Destination for the PLY file.
+    vertices : iterable of tuple
+               XYZ coordinates to write.
+    faces : iterable of tuple
+            Triangles with zero-based vertex indices.
+
+    Returns:
+    --------
+    None
+        Writes the PLY file at path.
+    """
     with open(path, "w", encoding="utf-8") as ply_file:
         ply_file.write("ply\nformat ascii 1.0\n")
         ply_file.write(f"element vertex {len(vertices)}\n")
@@ -74,7 +90,19 @@ def write_ascii_ply(path, vertices, faces):
 
 
 def write_unit_leaf_mesh(path):
-    """Write four separate unit-square leaves across two height bands."""
+    """
+    Write four unit-square leaves in two height bands.
+
+    Parameters:
+    -----------
+    path : str or pathlib.Path
+           Destination for the PLY leaf mesh.
+
+    Returns:
+    --------
+    None
+        Writes the leaf mesh at path.
+    """
     vertices = []
     faces = []
     for z in (1, 2):
@@ -91,13 +119,28 @@ def write_unit_leaf_mesh(path):
 
 
 def write_unit_wood_mesh(path):
-    """Write one small wood triangle inside the leaf mesh's ground bounds."""
+    """
+    Write a small wood triangle inside the leaf ground bounds.
+
+    Parameters:
+    -----------
+    path : str or pathlib.Path
+           Destination for the PLY wood mesh.
+
+    Returns:
+    --------
+    None
+        Writes the wood mesh at path.
+    """
     vertices = [(0.8, 0.4, 0), (1.2, 0.4, 0), (1, 0.6, 1)]
     write_ascii_ply(path, vertices, [(0, 1, 2)])
 
 
 class SceneMeshTests(unittest.TestCase):
+    """Unit tests for scene mesh reading and LAI/PAI calculations."""
+
     def setUp(self):
+        """Create temporary PLY meshes and an XML scene for each test."""
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = pathlib.Path(self.temp_dir.name)
@@ -114,6 +157,7 @@ class SceneMeshTests(unittest.TestCase):
         ET.ElementTree(scene).write(self.scene_path)
 
     def test_scene_reader_reads_ply_and_converts_face_indices(self):
+        """Verify PLY vertices are read and face indices use the reader convention."""
         vertices, faces = lai_module.SceneReader(str(self.scene_path)).read_ply(
             self.leaf_path
         )
@@ -123,6 +167,7 @@ class SceneMeshTests(unittest.TestCase):
         np.testing.assert_array_equal(faces[-1], [13, 15, 16])
 
     def test_calculate_lai_and_pai_from_scene(self):
+        """Verify scene-wide LAI and PAI against known mesh areas."""
         calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
 
         leaf_area, ground_area, per_mesh_leaf_area = calculator.calculate_leaf_area_index(
@@ -138,7 +183,55 @@ class SceneMeshTests(unittest.TestCase):
         self.assertEqual(len(per_mesh_leaf_area), 1)
         self.assertEqual(len(per_mesh_plant_area), 2)
 
+    def test_calculate_lai_and_pai_profiles_by_height(self):
+        """Verify height-band profiles give the expected index contributions."""
+        calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
+
+        leaf_profile = calculator.calculate_leaf_area_index_profile(
+            0, 2, 0, 1, height_bins=2
+        )
+        plant_profile = calculator.calculate_plant_area_index_profile(
+            0, 2, 0, 1, height_bins=2
+        )
+        total_lai, ground_area, _ = calculator.calculate_leaf_area_index(0, 2, 0, 1)
+        total_pai, _, _ = calculator.calculate_plant_area_index(0, 2, 0, 1)
+
+        np.testing.assert_allclose(leaf_profile[:, 0], [1.25, 1.75])
+        np.testing.assert_allclose(leaf_profile[:, 1], [1.0, 1.0])
+        self.assertAlmostEqual(np.sum(leaf_profile[:, 1]), total_lai / ground_area)
+        self.assertAlmostEqual(np.sum(plant_profile[:, 1]), total_pai / ground_area)
+
+    def test_area_index_profile_applies_min_height_and_validates_inputs(self):
+        """Verify profile filtering and errors for unsupported profile requests."""
+        calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
+
+        profile = calculator.calculate_leaf_area_index_profile(
+            0, 2, 0, 1, min_height=1.5, height_bins=2
+        )
+
+        self.assertAlmostEqual(np.sum(profile[:, 1]), 1.0)
+        with self.assertRaisesRegex(ValueError, "height_bins"):
+            calculator.calculate_leaf_area_index_profile(0, 2, 0, 1, height_bins=0)
+        with self.assertRaisesRegex(ValueError, "Invalid type"):
+            calculator.calculate_area_index_profile(0, 2, 0, 1, type="wood")
+
+    def test_area_index_profile_uses_and_validates_shared_height_range(self):
+        """Verify explicit height ranges provide aligned profile bin centers."""
+        calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
+
+        profile = calculator.calculate_leaf_area_index_profile(
+            0, 2, 0, 1, height_bins=2, height_range=(1, 2)
+        )
+
+        np.testing.assert_allclose(profile[:, 0], [1.25, 1.75])
+        np.testing.assert_allclose(profile[:, 1], [1.0, 1.0])
+        with self.assertRaisesRegex(ValueError, "contain all included"):
+            calculator.calculate_leaf_area_index_profile(
+                0, 2, 0, 1, height_bins=2, height_range=(1.1, 2)
+            )
+
     def test_lai_reduction_writes_meshes_and_scene_and_reports_new_indices(self):
+        """Verify LAI reduction writes a scene and reports its calculated indices."""
         reducer = lai_module.LeafAreaIndexNewScene(str(self.scene_path), new_lai=1.0)
 
         new_scene_path = pathlib.Path(reducer.create_new_scene())
@@ -158,6 +251,7 @@ class SceneMeshTests(unittest.TestCase):
         self.assertAlmostEqual(new_pai, (2 + expected_wood_area) / 2)
 
     def test_lai_reduction_preserves_relative_area_in_each_height_band(self):
+        """Verify thinning approximately preserves leaf area across height bands."""
         reducer = lai_module.LeafAreaIndexNewScene.__new__(
             lai_module.LeafAreaIndexNewScene
         )

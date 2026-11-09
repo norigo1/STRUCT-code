@@ -7,11 +7,12 @@
 #
 ######################################################################
 
+"""Measure and modify canopy cover and leaf/plant area indices in scenes."""
+
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 from xml.etree import ElementTree as ET
-from xml.dom import minidom
 from scipy.spatial import ConvexHull, Delaunay
 from scipy import interpolate as interp
 from shapely.geometry import MultiPoint, Polygon
@@ -20,150 +21,43 @@ import pathlib
 import pdb
 import time
 
-# read in scene
-class SceneReader:
-    def __init__(self, scene_path):
-        self.scene_path = scene_path
-
-    def resolve_filepath(self, filepath):
-        """Resolve scene-relative assets when the path is not valid from cwd."""
-        path = pathlib.Path(filepath)
-        if path.exists() or path.is_absolute():
-            return str(path)
-        scene_relative_path = pathlib.Path(self.scene_path).parent / path
-        return str(scene_relative_path) if scene_relative_path.exists() else str(path)
-
-    def read_scene(self):
-        """
-        Read the scene from the specified path and return a Scene object.
-        """
-        xml_tree = minidom.parse(self.scene_path)
-        ilist = xml_tree.getElementsByTagName("param")
-        filepaths = []
-        for i in ilist:
-            if i.attributes["key"].value == "filepath":
-                filepaths.append(i.attributes["value"].value)
-        return filepaths
-
-    def read_obj(self, filename):
-        """
-        Read the OBJ file and return a list of vertices and faces.
-        """
-        vertices = []
-        faces = []
-        with open(filename, 'r') as f:
-            for line in f:
-                if line.startswith('v '):
-                    vertices.append(list(map(float, line.strip().split()[1:]))[:3])
-                elif line.startswith('f '):
-                    faces.append(list(map(int, line.strip().split()[1:])))
-        return vertices, faces
-
-    def read_ply(self, filename):
-        """
-        Read an ASCII PLY file and return its vertices and triangular faces.
-        """
-        vertices = []
-        faces = []
-        with open(filename, 'r') as f:
-            lines = f.readlines()
-        if not lines or lines[0].strip() != "ply":
-            raise ValueError(f"Not a PLY file: {filename}")
-        if not any(line.startswith("format ascii ") for line in lines):
-            raise ValueError(f"Only ASCII PLY files are supported: {filename}")
-        try:
-            end_header = next(i for i, line in enumerate(lines) if line.strip() == "end_header")
-        except StopIteration as exc:
-            raise ValueError(f"PLY file has no end_header: {filename}") from exc
-
-        elements = []
-        for line in lines[1:end_header]:
-            fields = line.split()
-            if len(fields) == 3 and fields[0] == "element":
-                elements.append((fields[1], int(fields[2])))
-        body = lines[end_header + 1:]
-        offset = 0
-        for element_name, count in elements:
-            records = body[offset:offset + count]
-            if len(records) != count:
-                raise ValueError(f"PLY element records are incomplete: {filename}")
-            if element_name == "vertex":
-                for record in records:
-                    values = list(map(float, record.split()))
-                    if len(values) < 3:
-                        raise ValueError(f"PLY vertex has fewer than three coordinates: {filename}")
-                    vertices.append(values[:3])
-            elif element_name == "face":
-                for record in records:
-                    values = list(map(int, record.split()))
-                    if not values or values[0] != 3 or len(values) < 4:
-                        raise ValueError(f"Only triangular PLY faces are supported: {filename}")
-                    # PLY face indices are zero-based; convert them to the
-                    # one-based indexing shared by the OBJ reader and area code.
-                    faces.append([index + 1 for index in values[1:4]])
-            offset += count
-        return vertices, faces
-
-    def read_tree(self, directories, globstring, hmin=2.0):
-        """
-        Read the tree file and return a list of vertices and faces.
-        
-        Parameters:
-        directories: list of str
-            The directories containing the folders of the wood and leaf elements of the tree.
-        globstring: str
-            The glob string to match the leaf and wood elements of the tree.
-        hmin: float
-            The minimum height of the tree to be considered.
-        
-        Returns:
-        list of tuples
-            Vertices, faces tuples of the combined tree elements that match the globstring 
-            and are above the minimum height.
-        """
-        vertl = [] 
-        facel = []
-        for directory in directories:
-            if directory[-1] != '/':
-                directory += '/'
-            for filepath in pathlib.Path(directory).glob(globstring):
-                if filepath.suffix == '.obj':
-                    vertices, faces = self.read_obj(str(filepath))
-                elif filepath.suffix == '.ply':
-                    vertices, faces = self.read_ply(str(filepath))
-                else:
-                    raise ValueError(f"Unsupported file format: {filepath}")
-                verts = np.array(vertices)
-                faces = np.array(faces)
-                """
-                hfilt = verts[:,2] > hmin
-                vfilt = verts[hfilt]
-                fvals = np.where(hfilt)[0] + 1
-                finds = []
-                for f in faces:
-                    if f[0] in fvals and f[1] in fvals and f[2] in fvals:
-                        finds.append(True)
-                    else:
-                        finds.append(False)
-                """
-                vertl.append(verts)#vfilt)
-                facel.append(faces)#[np.array(finds)])
-
-        verto = np.vstack(vertl)
-        faceo = np.vstack((facel[0], facel[1] + len(vertl[0])))  # adjust face indices for concatenated vertices
-        return verto, faceo        
+from geometrical_calculations import polygon_area_3d
+from scene_io import SceneReader
 
 
 class GapFraction:
+    """Calculate projected vegetation gap fractions for a scene."""
 
     def __init__(self, scene):
+        """
+        Initialize gap-fraction calculations for a scene.
+
+        Parameters:
+        -----------
+        scene : str or pathlib.Path
+                Path to the scene XML file.
+        """
         self.scene = scene
         sr = SceneReader(scene)
         self.filepaths = sr.read_scene()
 
     def reproject_vertices(self, vertices, point, normal):
         """
-        Reproject the vertices onto a plane defined by a point and a normal vector.
+        Reproject vertices onto a plane defined by a point and normal vector.
+
+        Parameters:
+        -----------
+        vertices : np.ndarray, float
+                   n x 3 array of vertex coordinates.
+        point : np.ndarray, float
+                A point on the projection plane.
+        normal : np.ndarray, float
+                 Normal vector of the projection plane.
+
+        Returns:
+        --------
+        projected_vertices : np.ndarray, float
+                             Projected coordinates with the same shape as vertices.
         """
         normal = normal / np.linalg.norm(normal)  # normalize the normal vector
         d = -np.dot(normal, point)
@@ -180,18 +74,27 @@ class GapFraction:
         divided by the former to retrieve the gap fraction.
 
         Parameters:
-        vertices, faces: OBJ-style vertices and 1-indexed triangular faces.
-        zenith: float
-            The zenith angle in degrees.
-        azimuth: float
-            The azimuth angle in degrees.
-        alpha_radius: float
-            The radius of the alpha shape. Larger values will result in a more convex
-            shape, while smaller values will result in a more concave shape.
+        -----------
+        vertices : array-like, float
+                   Mesh vertex coordinates.
+        faces : array-like, int
+                Triangular faces with one-based vertex indices.
+        zenith : float
+                 Viewing zenith angle in degrees.
+        azimuth : float
+                  Viewing azimuth angle in degrees.
+        alpha_radius : float, default=0.2
+                       Maximum circumradius used by the alpha-shape outline.
 
         Returns:
-        gap_fraction: float
-            The gap fraction of the vegetation object.
+        --------
+        gap_fraction : float
+                       Fraction of the filled crown area not covered by projected
+                       vegetation faces.
+        vegetation_area : float
+                          Area covered by the projected vegetation faces.
+        crown_area : float
+                     Crown area enclosed by the filled alpha shape.
         """
         # Convert angles to radians
         zenith_rad = np.radians(zenith)
@@ -224,7 +127,17 @@ class GapFraction:
 
 # class to calculate canopy cover
 class CanopyCover:
+    """Calculate crown areas and canopy cover from scene vegetation meshes."""
+
     def __init__(self, scene):
+        """
+        Initialize canopy-cover calculations for a scene.
+
+        Parameters:
+        -----------
+        scene : str or pathlib.Path
+                Path to the scene XML file.
+        """
         self.scene = scene
         self.sr = SceneReader(scene)
         self.filepaths = self.sr.read_scene()
@@ -236,22 +149,28 @@ class CanopyCover:
         of facets. Will need a new method if the stem is made of cylinders.
 
         Parameters:
-        directories: list of str
-            The directories containing the folders of the wood and leaf elements of the tree.
-        globstring: str
-            The glob string to match the leaf and wood elements of the tree.
-            Note that globstring should have "{iter}" in it, which will be replaced by the 
-            elements of the iterable. e.g. "tree_{iter}_*" will match "tree_1_*_leaves.obj", 
-            "tree_1_*_wood.obj", etc.
-        iterable: list, array, etc.
-            An iterable of some kind that is fed to the globstring which will be used to 
-            match the leaf and wood elements of the tree.
-        ga: str
-            The method to calculate the ground area. Options are "max_extent" (default), 
-            "convexhull", or "can_outline". "max_extent" is the area of the bounding box 
-            around all the crowns, "convex_hull" is the area of the convex hull around all 
-            the crowns, and "can_outline" is the area of the shape around all the crowns (if 
-            there is only one polygon for the whole canopy).
+        -----------
+        directories : iterable of str
+                      Directories containing tree mesh files.
+        globstring : str
+                     Mesh glob pattern containing the ``{iter}`` placeholder.
+        iterable : iterable
+                   Values substituted into ``globstring`` to select trees.
+        ga : str, default='max_extent'
+             Ground-area method: bounding extent, convex hull, or canopy outline.
+
+        Returns:
+        --------
+        canopy_area : float
+                      Total union area of the crowns.
+        ground_area : float
+                      Area used as the ground-area denominator.
+        canopy_cover : float
+                       Canopy area divided by ground area.
+        crown_outlines : list of np.ndarray
+                         XY outline coordinates for each selected crown.
+        ground_outline : np.ndarray
+                         XY coordinates of the ground-area boundary.
         """
         crown_outlines = []
         for i in iterable:
@@ -330,28 +249,45 @@ class CanopyCover:
         of facets. Will need a new method if the stem is made of cylinders.
 
         Parameters:
-        directories: list of str
-            The directories containing the folders of the wood and leaf elements of the tree.
-        globstring: str
-            The glob string to match the leaf and wood elements of the tree.
-            Note that globstring should have "{iter}" in it, which will be replaced by the 
-            elements of the iterable. e.g. "tree_{iter}_*" will match "tree_1_*_leaves.obj", 
-            "tree_1_*_wood.obj", etc.
-        iterable: list, array, etc.
-            An iterable of some kind that is fed to the globstring which will be used to 
-            match the leaf and wood elements of the tree.
-        ga: str, optional
-            The method to use for calculating the ground area. Options are "max_extent", "convexhull", and "can_outline".
-        alpha_radius: float, optional
-            The radius of the alpha shape (concave hull) to use for calculating the canopy cover.
-        canopy_cover_outline: list of tuples, optional (come back to this)
-            The outline of the canopy cover, as a list of (x, y) tuples.
+        -----------
+        directories : iterable of str
+                      Directories containing tree mesh files.
+        globstring : str
+                     Mesh glob pattern containing the ``{iter}`` placeholder.
+        iterable : iterable
+                   Values substituted into ``globstring`` to select trees.
+        ga : str, default='max_extent'
+             Ground-area method reserved for the planned implementation.
+        alpha_radius : float, default=0.2
+                       Alpha-shape radius reserved for the planned implementation.
+        canopy_cover_outline : iterable of tuple or None, default=None
+                               Optional outline reserved for the planned
+                               implementation.
+
+        Returns:
+        --------
+        None
+            This method is currently a placeholder and does not calculate a value.
         """
         something = 0
 
     def calculate_alpha_shape(self, points, alpha_radius=0.2):
         """
-        Calculate the alpha shape (concave hull) of a set of points.
+        Calculate the alpha shape (concave hull) of a set of XY points.
+
+        Parameters:
+        -----------
+        points : array-like, float
+                 Point coordinates; only the first two columns are used.
+        alpha_radius : float, default=0.2
+                       Maximum circumradius of Delaunay triangles retained in
+                       the alpha shape.
+
+        Returns:
+        --------
+        shape : shapely geometry
+                Union of retained triangles, or the convex hull for fewer than
+                four input points.
         """
         points = np.asarray(points)[:, :2]
         if len(points) < 4:
@@ -384,15 +320,21 @@ class CanopyCover:
         so gaps between leaves are closed while concavities in the outline are kept.
 
         Parameters:
-        vertices, faces: OBJ-style vertices and 1-indexed triangular faces.
-        alpha_radius: maximum circumradius of a retained Delaunay triangle, in the
-            units of the vertices (default: 0.2 * longest side of the bounding box).
-            Large values approach the convex hull.
+        -----------
+        vertices : array-like, float
+                   Mesh vertex coordinates.
+        faces : array-like, int
+                Triangular faces with one-based vertex indices.
+        alpha_radius : float or None, default=None
+                       Maximum circumradius of retained Delaunay triangles.
+                       The default is based on the mesh's XY extent.
+
         Returns:
-        crown_area: float
-            The area enclosed by the alpha shape (holes filled).
-        contour: np.array
-            The exterior of the largest component as (x, y) points.
+        --------
+        crown_area : float
+                     Area enclosed by the alpha shape with holes filled.
+        contour : np.ndarray, float
+                  XY coordinates of the largest component's exterior.
         """
         vertices = np.asarray(vertices)[:, :2]
         faces = np.asarray(faces, dtype=int)
@@ -428,6 +370,20 @@ class CanopyCover:
     def calculate_crown_area_with_gaps(self, vertices, faces):
         """
         Calculate the crown area of a vegetation object given its vertices and faces.
+
+        Parameters:
+        -----------
+        vertices : array-like, float
+                   Mesh vertex coordinates.
+        faces : array-like, int
+                Triangular faces with one-based vertex indices.
+
+        Returns:
+        --------
+        crown_area : float
+                     Area of the union of projected face polygons.
+        union_polygon : shapely geometry
+                        Union of the projected vegetation faces.
         """
         leaf_polygons = []
         vertices = np.array(vertices)[:,:2]
@@ -443,6 +399,18 @@ class CanopyCover:
     def line_segment_intersection(self, line1, seg1, seg2):
         """
         Calculate the intersection of an infinite line and a line segment.
+
+        Parameters:
+        -----------
+        line1 : array-like, float
+                Coefficients ``(a, b, c)`` of the line ``a*x + b*y = c``.
+        seg1, seg2 : array-like, float
+                     XY coordinates of the segment endpoints.
+
+        Returns:
+        --------
+        intersection : tuple of float or None
+                       XY intersection if it lies on the segment; otherwise None.
         """
         a, b, c = line1[:3]
         x1, y1 = seg1
@@ -463,8 +431,17 @@ class CanopyCover:
 
     def rotational_sort(self, points):
         """
-        Order points greedily: the next point is chosen from the 10 nearest remaining
-        points using an equal weighting of counter-clockwise angle and distance.
+        Order points greedily by angular progression and distance.
+
+        Parameters:
+        -----------
+        points : array-like, float
+                 XY point coordinates to order.
+
+        Returns:
+        --------
+        ordered_points : np.ndarray, float
+                         Input points reordered by the greedy traversal.
         """
         points = np.asarray(points)
         if len(points) < 2:
@@ -495,8 +472,24 @@ class CanopyCover:
 
 
 # class to calculate leaf area index
-class calculateVegAreaIndex:
+class CalculateVegAreaIndex:
+    """Calculate scene-wide leaf and plant area from vegetation meshes."""
+
     def __init__(self, scene, leaf_id="leaves", terrain_id="terrain", wood_id="wood"):
+        """
+        Initialize area-index calculations for a scene.
+
+        Parameters:
+        -----------
+        scene : str or pathlib.Path
+                Path to the scene XML file.
+        leaf_id : str, default='leaves'
+                  Identifier used to recognize leaf mesh paths.
+        terrain_id : str, default='terrain'
+                     Identifier used to recognize terrain paths.
+        wood_id : str, default='wood'
+                  Identifier used to recognize wood mesh paths.
+        """
         self.scene = scene
         sr = SceneReader(scene)
         self.filepaths = sr.read_scene()
@@ -514,18 +507,23 @@ class calculateVegAreaIndex:
         total_leaf_area and divide by your specific ground area (e.g. canopy perimeter).
 
         Parameters:
-        xmin, xmax, ymin, ymax: float
-            The bounding box coordinates to calculate the ground area.
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used to calculate ground area and
+                                 select fully contained mesh objects.
+        min_height : float, default=0.0
+                     Faces whose highest vertex is below this height are excluded.
+        type : str, default='leaf'
+               Mesh category to measure: 'leaf' or 'wood'.
+
         Returns:
-        total_leaf_area: float
-            The total leaf area of the scene.
-        ground_area: float
-            The ground area of the scene.
-        leaf_area: np.array
-            The leaf area of each vegetation object in the scene.
-        min_height: float
-            The minimum height of the vegetation objects to be considered for leaf area 
-            calculation.
+        --------
+        total_area : float
+                     Sum of the selected mesh face areas.
+        ground_area : float
+                     Area of the XY bounding rectangle.
+        area_by_mesh : np.ndarray, float
+                       Area contributed by each included mesh.
         """
         area = []
         if type == "leaf":
@@ -573,18 +571,21 @@ class calculateVegAreaIndex:
         Calculate the leaf area index (LAI) of the scene.
 
         Parameters:
-        xmin, xmax, ymin, ymax: float
-            The bounding box coordinates to calculate the ground area.
-        min_height: float
-            The minimum height of the vegetation objects to be considered for leaf area 
-            calculation.
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used to calculate ground area and
+                                 select fully contained leaf meshes.
+        min_height : float, default=0.0
+                     Faces whose highest vertex is below this height are excluded.
+
         Returns:
-        total_leaf_area: float
-            The total leaf area of the scene.
-        ground_area: float
-            The ground area of the scene.
-        leaf_area: np.array
-            The leaf area of each vegetation object in the scene.
+        --------
+        total_leaf_area : float
+                          Sum of the leaf mesh face areas.
+        ground_area : float
+                      Area of the XY bounding rectangle.
+        leaf_area : np.ndarray, float
+                    Leaf area contributed by each included mesh.
         """
         total_leaf_area, ground_area, leaf_area = self.calculate_area_index(xmin, xmax, ymin, ymax, 
                                                                             min_height=min_height, 
@@ -596,14 +597,21 @@ class calculateVegAreaIndex:
         Calculate the plant area index (PAI) of the scene.
 
         Parameters:
-        xmin, xmax, ymin, ymax: float
-            The bounding box coordinates to calculate the ground area.
-        min_height: float
-            The minimum height of the vegetation objects to be considered for plant area 
-            calculation.
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used to calculate ground area and
+                                 select fully contained meshes.
+        min_height : float, default=0.0
+                     Faces whose highest vertex is below this height are excluded.
+
         Returns:
-        total_plant_area: float
-            The plant area index of the scene.
+        --------
+        total_plant_area : float
+                           Sum of leaf and wood mesh face areas.
+        ground_area : float
+                      Area of the XY bounding rectangle.
+        plant_area : np.ndarray, float
+                     Leaf and wood area contributed by each included mesh.
         """
         total_leaf_area, ground_area, leaf_area = self.calculate_area_index(xmin, xmax, ymin, ymax, 
                                                                             min_height=min_height, 
@@ -617,21 +625,234 @@ class calculateVegAreaIndex:
         plant_area = np.concatenate((leaf_area, wood_area))
         return total_plant_area, ground_area, np.array(plant_area)
 
+    def calculate_leaf_area_index_profile(
+        self, xmin, xmax, ymin, ymax, min_height=0.0, height_bins=10,
+        height_range=None,
+    ):
+        """
+        Calculate the LAI contribution in equally spaced height bands.
+
+        Parameters:
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used for the ground-area denominator
+                                 and to select fully contained leaf meshes.
+        min_height : float, default=0.0
+                     Exclude faces whose highest vertex is below this height.
+        height_bins : int, default=10
+                      Number of equally spaced vertical bands.
+        height_range : tuple of float, optional
+                       Shared (minimum, maximum) height for consistent profile
+                       comparisons. All included face heights must fit in range.
+
+        Returns:
+        --------
+        profile : np.ndarray, float
+                  n x 2 array containing height-band centers and the LAI
+                  contribution of each band. Contributions sum to the scene LAI.
+        """
+        return self.calculate_area_index_profile(
+            xmin, xmax, ymin, ymax, min_height=min_height,
+            type="leaf", height_bins=height_bins, height_range=height_range,
+        )
+
+    def calculate_plant_area_index_profile(
+        self, xmin, xmax, ymin, ymax, min_height=0.0, height_bins=10,
+        height_range=None,
+    ):
+        """
+        Calculate the PAI contribution in equally spaced height bands.
+
+        Parameters:
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used for the ground-area denominator
+                                 and to select fully contained leaf and wood meshes.
+        min_height : float, default=0.0
+                     Exclude faces whose highest vertex is below this height.
+        height_bins : int, default=10
+                      Number of equally spaced vertical bands.
+        height_range : tuple of float, optional
+                       Shared (minimum, maximum) height for consistent profile
+                       comparisons. All included face heights must fit in range.
+
+        Returns:
+        --------
+        profile : np.ndarray, float
+                  n x 2 array containing height-band centers and the PAI
+                  contribution of each band. Contributions sum to the scene PAI.
+        """
+        return self.calculate_area_index_profile(
+            xmin, xmax, ymin, ymax, min_height=min_height,
+            type="plant", height_bins=height_bins, height_range=height_range,
+        )
+
+    def calculate_area_index_profile(
+        self, xmin, xmax, ymin, ymax, min_height=0.0, type="leaf", height_bins=10,
+        height_range=None,
+    ):
+        """
+        Calculate per-height-band LAI or PAI contributions from scene meshes.
+
+        Each triangular face is assigned to a height band using its mean vertex
+        height. Its 3D surface area is divided by the XY ground area, so summing
+        the profile values gives the corresponding scene-wide index.
+
+        Parameters:
+        -----------
+        xmin, xmax, ymin, ymax : float
+                                 XY bounds used for the ground-area denominator
+                                 and to select fully contained meshes.
+        min_height : float, default=0.0
+                     Exclude faces whose highest vertex is below this height.
+        type : str, default='leaf'
+               Area index to profile: 'leaf' for LAI or 'plant' for PAI
+               (leaves plus wood).
+        height_bins : int, default=10
+                      Number of equally spaced vertical bands.
+        height_range : tuple of float, optional
+                       Shared (minimum, maximum) height for consistent profile
+                       comparisons. All included face heights must fit in range.
+
+        Returns:
+        --------
+        profile : np.ndarray, float
+                  n x 2 array containing band-center heights and the area's
+                  contribution to LAI or PAI.
+
+        Raises:
+        -------
+        ValueError
+            If type is unsupported, height_bins is not positive, the ground
+            area is not positive, or height_range is invalid or too narrow.
+        """
+        if type == "leaf":
+            type_ids = (self.leaf_id,)
+        elif type == "plant":
+            type_ids = (self.leaf_id, self.wood_id)
+        else:
+            raise ValueError(f"Invalid type: {type}. Choose from 'leaf' or 'plant'.")
+        if not isinstance(height_bins, int) or height_bins < 1:
+            raise ValueError("height_bins must be a positive integer.")
+        if height_range is not None:
+            if len(height_range) != 2:
+                raise ValueError("height_range must contain a minimum and maximum.")
+            min_profile_height, max_profile_height = map(float, height_range)
+            if (
+                not np.isfinite(min_profile_height)
+                or not np.isfinite(max_profile_height)
+                or min_profile_height >= max_profile_height
+            ):
+                raise ValueError("height_range must be finite and increasing.")
+
+        ground_area = (xmax - xmin) * (ymax - ymin)
+        if ground_area <= 0:
+            raise ValueError("The scene ground area must be greater than zero.")
+
+        face_heights = []
+        face_areas = []
+        reader = SceneReader(self.scene)
+        for filepath in self.filepaths:
+            if not any(type_id in filepath for type_id in type_ids):
+                continue
+            resolved_filepath = reader.resolve_filepath(filepath)
+            suffix = pathlib.Path(filepath).suffix.lower()
+            if suffix == ".obj":
+                vertices, faces = reader.read_obj(resolved_filepath)
+            elif suffix == ".ply":
+                vertices, faces = reader.read_ply(resolved_filepath)
+            else:
+                raise ValueError(f"Unsupported file format: {filepath}")
+
+            vertices = np.asarray(vertices, dtype=float)
+            faces = np.asarray(faces, dtype=int)
+            if not len(vertices) or not len(faces):
+                continue
+            if (
+                np.min(vertices[:, 0]) < xmin or np.max(vertices[:, 0]) > xmax
+                or np.min(vertices[:, 1]) < ymin or np.max(vertices[:, 1]) > ymax
+            ):
+                continue
+
+            triangles = vertices[faces[:, :3] - 1]
+            eligible = np.max(triangles[:, :, 2], axis=1) >= min_height
+            triangles = triangles[eligible]
+            if not len(triangles):
+                continue
+            areas = 0.5 * np.linalg.norm(
+                np.cross(
+                    triangles[:, 1] - triangles[:, 0],
+                    triangles[:, 2] - triangles[:, 0],
+                ),
+                axis=1,
+            )
+            face_heights.append(np.mean(triangles[:, :, 2], axis=1))
+            face_areas.append(areas)
+
+        if not face_heights:
+            return np.empty((0, 2), dtype=float)
+
+        heights = np.concatenate(face_heights)
+        areas = np.concatenate(face_areas)
+        if height_range is not None:
+            if (
+                np.min(heights) < min_profile_height
+                or np.max(heights) > max_profile_height
+            ):
+                raise ValueError("height_range must contain all included face heights.")
+            edges = np.linspace(min_profile_height, max_profile_height, height_bins + 1)
+        else:
+            min_profile_height = float(np.min(heights))
+            max_profile_height = float(np.max(heights))
+            if min_profile_height == max_profile_height:
+                edges = np.linspace(
+                    min_profile_height - 0.5,
+                    max_profile_height + 0.5,
+                    height_bins + 1,
+                )
+            else:
+                edges = np.linspace(
+                    min_profile_height, max_profile_height, height_bins + 1
+                )
+        band_indices = np.searchsorted(edges, heights, side="right") - 1
+        band_indices = np.clip(band_indices, 0, height_bins - 1)
+        area_by_band = np.bincount(
+            band_indices, weights=areas, minlength=height_bins
+        )
+        band_centers = (edges[:-1] + edges[1:]) / 2
+        return np.column_stack((band_centers, area_by_band / ground_area))
+
     @staticmethod
     def calculate_area_triangle(v1, v2, v3):
         """
         Calculate the area of a triangle given its vertices.
+
+        Parameters:
+        -----------
+        v1, v2, v3 : np.ndarray, float
+                     XYZ coordinates of the three triangle vertices.
+
+        Returns:
+        --------
+        area : float
+               Triangle area in squared coordinate units.
         """
-        return 0.5 * np.linalg.norm(np.cross(v2 - v1, v3 - v1))
-
-
-# Keep a conventional class-name spelling available while preserving the original API.
-CalculateVegAreaIndex = calculateVegAreaIndex
+        return polygon_area_3d(np.array([v1, v2, v3]))
 
 
 # class to map canopy cover spatially
 class CanopyCoverSpatial:
+    """Store crown locations and areas and provide canopy-cover plots."""
+
     def __init__(self, scene):
+        """
+        Load scene mesh locations and crown areas for plotting.
+
+        Parameters:
+        -----------
+        scene : str or pathlib.Path
+                Path to the scene XML file.
+        """
         self.scene = scene
         sr = SceneReader(scene)
         self.filepaths = sr.read_scene()
@@ -652,7 +873,12 @@ class CanopyCoverSpatial:
 
     def plot_canopy_cover(self):
         """
-        Plot the canopy cover spatially using matplotlib.
+        Plot crown locations with marker sizes proportional to crown area.
+
+        Returns:
+        --------
+        None
+            Displays the plot with Matplotlib.
         """
         plt.scatter(self.locations[:, 0], self.locations[:, 1], s=(self.xy_area/np.pi)**0.5, alpha=0.5)
         plt.xlabel('X Coordinate')
@@ -665,6 +891,11 @@ class CanopyCoverSpatial:
         Plot the union of all the crowns (highlighted) against the area outside
         of all the crowns. The outside area is bounded by the convex hull around
         all the crowns in the x-y plane.
+
+        Returns:
+        --------
+        None
+            Displays the plot with Matplotlib.
         """
 
         fig, ax = plt.subplots()
@@ -680,6 +911,11 @@ class CanopyCoverSpatial:
         """
         Plot the crown size profile, with the crowns ranked from smallest
         to largest.
+
+        Returns:
+        --------
+        None
+            Displays the plot with Matplotlib.
         """
         ranked = np.sort(self.xy_area)
         order = np.arange(1, len(ranked) + 1)
@@ -692,12 +928,15 @@ class CanopyCoverSpatial:
 
 # class to remove trees from a scene and create a new one
 class CanopyCoverNewScene:
+    """Create a scene with a lower canopy cover by retaining a tree subset."""
+
     def __init__(self, scene, new_cc, orig_cc=None, leaf_id="leaves", terrain_id="terrain", wood_id="wood"):
         """
         Class to create a new scene with a reduced canopy cover compared to
         the original scene. The new canopy cover is specified by the user.
 
         Parameters:
+        -----------
         scene:      str
                     The path to the original scene.
         new_cc:     float
@@ -710,6 +949,12 @@ class CanopyCoverNewScene:
                     String identifier for the terrain objects in the scene.
         wood_id:    str, optional
                     String identifier for the wood objects in the scene. 
+
+        Returns:
+        --------
+        None
+            Initializes the reducer and calculates the original canopy cover
+            when it is not supplied.
         """
         self.scene = scene
         self.sr = SceneReader(scene)
@@ -737,6 +982,11 @@ class CanopyCoverNewScene:
         canopy cover is reached. The trees are removed based on their spatial
         distribution and conformity to the original crown cover distribution. The
         aim is to preserve, in as much as is possible, the original distributions.
+
+        Returns:
+        --------
+        retained_leaf_paths : np.ndarray, str
+                              Leaf mesh paths retained in the reduced scene.
         """
         if self.new_cc >= self.current_cc:
             raise ValueError("New canopy cover must be less than current canopy cover.")
@@ -789,12 +1039,14 @@ class CanopyCoverNewScene:
         Get the matching stem filepaths for the new scene based on the new leaf filepaths.
 
         Parameters:
-        new_filepaths: list
-                       List of filepaths for the new leaf objects in the scene.
+        -----------
+        new_filepaths : iterable of str
+                        Leaf mesh paths to match with stems.
 
         Returns:
-        matching_stems: list
-                        List of filepaths for the matching stem objects in the scene.
+        -----------
+        matching_stems : list of str
+                         Paths to stem meshes paired with the supplied leaves.
         """
         matching_stems = []
         for leaf_path in new_filepaths:
@@ -808,8 +1060,14 @@ class CanopyCoverNewScene:
         Create a new scene with the specified new leaf filepaths and their matching stem filepaths.
 
         Parameters:
-        new_filepaths: list
-                       List of filepaths for the new leaf objects in the scene.
+        -----------
+        new_filepaths : iterable of str
+                        Leaf mesh paths to include in the new scene.
+
+        Returns:
+        --------
+        scene_path : str
+                     Path to the generated scene XML.
         """
         new_scene_path = self.scene.replace('.xml', f'_cc{self.new_cc*100:.2f}.xml')
         matching_stems = self.get_matching_stems(new_filepaths)
@@ -827,19 +1085,33 @@ class CanopyCoverNewScene:
 
 # class to remove leaves from trees in a scene and create a new scene
 class LeafAreaIndexNewScene:
+    """Create a scene with a target LAI by reducing whole leaf components."""
+
     def __init__(self, scene, new_lai, orig_lai=None, leaf_id="leaves", terrain_id="terrain", wood_id="wood",
                  height_bins=10):
         """
         Create a scene with a reduced LAI by thinning leaf faces uniformly.
 
         Parameters:
-        scene: Path to the original scene XML.
-        new_lai: Desired LAI, in the same units as the existing scene LAI.
-        orig_lai: Optional LAI override; calculated from the scene if omitted.
-        leaf_id, terrain_id, wood_id: Identifiers for the corresponding scene files.
-        height_bins: Number of equally spaced vertical bands used for thinning each
-            tree. Matching the retained fraction in every band keeps the reduction
-            distributed throughout each tree's height.
+        -----------
+        scene : str or pathlib.Path
+                Path to the original scene XML.
+        new_lai : float
+                  Desired scene LAI in the units of the source scene.
+        orig_lai : float or None, default=None
+                   Optional original scene LAI; calculated from the scene when omitted.
+        leaf_id, terrain_id, wood_id : str
+                                      Identifiers for the corresponding scene assets.
+        height_bins : int, default=10
+                      Number of equally spaced vertical bands used for thinning
+                      each tree. Retaining a similar fraction per band preserves
+                      the approximate vertical distribution.
+
+        Returns:
+        --------
+        None
+            Initializes scene bounds, original area indices, and the retained
+            leaf-area fraction.
         """
         self.scene = scene
         self.sr = SceneReader(scene)
@@ -1170,8 +1442,11 @@ class LeafAreaIndexNewScene:
         Create one reduced PLY per leaf mesh, applying the same proportional
         reduction to every tree and distributing it evenly over tree height.
 
-        Returns the generated leaf PLY paths in the same order as the scene's
-        original leaf mesh references.
+        Returns:
+        --------
+        generated_paths : list of str
+                          Generated leaf PLY paths in the order of the scene's
+                          original leaf mesh references.
         """
         generated_paths = []
         suffix = f"_lai{self.new_lai:.4f}.ply"
@@ -1191,7 +1466,16 @@ class LeafAreaIndexNewScene:
         return generated_paths
 
     def calculate_new_indices(self):
-        """Calculate LAI and PAI for the generated scene leaf meshes."""
+        """
+        Calculate LAI and PAI for the generated scene.
+
+        Returns:
+        --------
+        new_lai : float
+                  LAI calculated from the reduced leaf meshes.
+        new_pai : float
+                  PAI calculated from the reduced scene's leaf and wood meshes.
+        """
         if not hasattr(self, "new_filepaths"):
             raise RuntimeError("Call reduce_lai() before calculating the new indices.")
         if not hasattr(self, "new_scene_path"):
@@ -1223,6 +1507,17 @@ class LeafAreaIndexNewScene:
         If no generated paths are supplied, reduce_lai() is run automatically.
         The original scene is left untouched, and all non-leaf references are
         preserved as they appeared in the source XML.
+
+        Parameters:
+        -----------
+        new_filepaths : iterable of str or None, default=None
+                        Generated leaf mesh paths to reference. When omitted,
+                        the reducer uses existing generated paths or creates them.
+
+        Returns:
+        --------
+        scene_path : str
+                     Path to the newly written scene XML.
         """
         if new_filepaths is None:
             new_filepaths = getattr(self, "new_filepaths", None)
