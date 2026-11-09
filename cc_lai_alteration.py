@@ -921,13 +921,56 @@ class LeafAreaIndexNewScene:
             raise ValueError(f"Leaf mesh has an out-of-range face index: {filepath}")
         return vertices, faces
 
+    @staticmethod
+    def _connected_leaf_faces(faces):
+        """Group triangles into leaves by their shared mesh edges.
+
+        Two triangles are adjacent when they share two vertex indices (an edge).
+        Taking the transitive closure of that relation groups a triangulated leaf
+        polygon, such as a six-sided leaf made of four triangles, as one unit.
+        """
+        parent = np.arange(len(faces), dtype=int)
+
+        def find(index):
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return int(index)
+
+        def union(first, second):
+            root_first = find(first)
+            root_second = find(second)
+            if root_first != root_second:
+                parent[root_second] = root_first
+
+        edge_faces = {}
+        for face_index, face in enumerate(faces):
+            for edge_index in range(3):
+                edge = tuple(sorted((
+                    int(face[edge_index]),
+                    int(face[(edge_index + 1) % 3]),
+                )))
+                edge_faces.setdefault(edge, []).append(face_index)
+
+        for adjacent_faces in edge_faces.values():
+            for face_index in adjacent_faces[1:]:
+                union(adjacent_faces[0], face_index)
+
+        components = {}
+        for face_index in range(len(faces)):
+            components.setdefault(find(face_index), []).append(face_index)
+        return [
+            np.asarray(component, dtype=int)
+            for component in components.values()
+        ]
+
     def _select_faces(self, vertices, faces):
         """
-        Select a consistent share of faces per tree and height band.
+        Select complete leaves to retain in each tree and height band.
 
-        Face centers are distributed evenly through each band's vertical range;
-        using the same retained share in every band avoids concentrating removal
-        at the top or bottom of a tree.
+        A leaf is a transitive component of triangles connected by shared edges.
+        Whole leaves, rather than individual triangles, are selected while
+        targeting the requested retained-area fraction in each height band.
         """
         if self.retained_fraction >= 1 or len(faces) == 0:
             return np.arange(len(faces), dtype=int)
@@ -935,7 +978,7 @@ class LeafAreaIndexNewScene:
             return np.empty(0, dtype=int)
 
         face_vertices = vertices[faces - 1]
-        face_heights = np.mean(face_vertices[:, :, 2], axis=1)
+        components = self._connected_leaf_faces(faces)
         face_areas = 0.5 * np.linalg.norm(
             np.cross(
                 face_vertices[:, 1] - face_vertices[:, 0],
@@ -943,64 +986,73 @@ class LeafAreaIndexNewScene:
             ),
             axis=1,
         )
-        min_height = float(np.min(face_heights))
-        height_range = float(np.max(face_heights) - min_height)
+        face_heights = np.mean(face_vertices[:, :, 2], axis=1)
+        leaf_heights = np.asarray([
+            np.average(face_heights[component], weights=face_areas[component])
+            if np.sum(face_areas[component]) > 0
+            else np.mean(face_heights[component])
+            for component in components
+        ])
+        leaf_areas = np.asarray([
+            np.sum(face_areas[component]) for component in components
+        ])
+        min_height = float(np.min(leaf_heights))
+        height_range = float(np.max(leaf_heights) - min_height)
         if height_range == 0:
-            band_ids = np.zeros(len(faces), dtype=int)
+            band_ids = np.zeros(len(components), dtype=int)
         else:
             band_ids = np.minimum(
-                ((face_heights - min_height) / height_range * self.height_bins).astype(int),
+                ((leaf_heights - min_height) / height_range * self.height_bins).astype(int),
                 self.height_bins - 1,
             )
 
         selected = []
         for band_id in range(self.height_bins):
-            band_faces = np.flatnonzero(band_ids == band_id)
-            if len(band_faces) == 0:
+            band_leaves = np.flatnonzero(band_ids == band_id)
+            if len(band_leaves) == 0:
                 continue
-            band_faces = band_faces[
-                np.argsort(face_heights[band_faces], kind="stable")
+            band_leaves = band_leaves[
+                np.argsort(leaf_heights[band_leaves], kind="stable")
             ]
-            # Target the same share of surface area in every tree-height band.
-            # Evenly spaced face samples keep the selected geometry distributed
-            # vertically, while trying nearby sample counts/phases reduces the
-            # error caused by faces having different areas.
-            band_areas = face_areas[band_faces]
+            # Target the same share of total leaf surface area in each band,
+            # while retaining whole leaves at evenly distributed heights.
+            band_areas = leaf_areas[band_leaves]
             target_area = self.retained_fraction * np.sum(band_areas)
-            expected_count = self.retained_fraction * len(band_faces)
-            candidate_counts = {0, len(band_faces)}
+            expected_count = self.retained_fraction * len(band_leaves)
+            candidate_counts = {0, len(band_leaves)}
             for count in (int(np.floor(expected_count)), int(np.ceil(expected_count))):
                 candidate_counts.update(
-                    max(0, min(len(band_faces), count + offset))
+                    max(0, min(len(band_leaves), count + offset))
                     for offset in (-1, 0, 1)
                 )
 
-            best_faces = np.empty(0, dtype=int)
+            best_leaves = np.empty(0, dtype=int)
             best_score = (float("inf"), float("inf"))
-            phase_count = min(len(band_faces), 16)
+            phase_count = min(len(band_leaves), 16)
             for keep_count in candidate_counts:
                 if keep_count == 0:
                     candidates = [np.empty(0, dtype=int)]
-                elif keep_count == len(band_faces):
-                    candidates = [band_faces]
+                elif keep_count == len(band_leaves):
+                    candidates = [band_leaves]
                 else:
                     candidates = []
                     for phase in np.arange(phase_count) / phase_count:
                         positions = np.floor(
                             (np.arange(keep_count) + phase)
-                            * len(band_faces) / keep_count
+                            * len(band_leaves) / keep_count
                         ).astype(int)
-                        candidates.append(band_faces[positions])
-                for candidate in candidates:
-                    kept_area = np.sum(face_areas[candidate])
+                        candidates.append(band_leaves[positions])
+                for candidate_leaves in candidates:
+                    kept_area = np.sum(leaf_areas[candidate_leaves])
                     score = (
                         abs(target_area - kept_area),
-                        abs(len(candidate) - expected_count),
+                        abs(len(candidate_leaves) - expected_count),
                     )
                     if score < best_score:
                         best_score = score
-                        best_faces = candidate
-            selected.extend(best_faces)
+                        best_leaves = candidate_leaves
+            for leaf_index in best_leaves:
+                selected.extend(components[int(leaf_index)])
         return np.asarray(sorted(selected), dtype=int)
 
     @staticmethod
@@ -1034,7 +1086,22 @@ class LeafAreaIndexNewScene:
         if face_count != len(faces):
             raise ValueError(f"PLY face records do not match parsed faces: {source_path}")
 
+        kept_face_ids = np.asarray(kept_face_ids, dtype=int)
+        used_vertex_ids = (
+            np.unique(faces[kept_face_ids, :3] - 1)
+            if len(kept_face_ids)
+            else np.empty(0, dtype=int)
+        )
+        vertex_element_count = next(count for name, count in elements if name == "vertex")
+        vertex_remap = np.full(vertex_element_count, -1, dtype=int)
+        vertex_remap[used_vertex_ids] = np.arange(len(used_vertex_ids))
+
         updated_header = list(lines[:end_header])
+        vertex_element_index = next(
+            i for i, line in enumerate(updated_header)
+            if line.split()[:2] == ["element", "vertex"]
+        )
+        updated_header[vertex_element_index] = f"element vertex {len(used_vertex_ids)}\n"
         face_element_index = next(
             i for i, line in enumerate(updated_header)
             if line.split()[:2] == ["element", "face"]
@@ -1047,8 +1114,21 @@ class LeafAreaIndexNewScene:
             records = body[offset:offset + count]
             if len(records) != count:
                 raise ValueError(f"PLY element records are incomplete: {source_path}")
-            if element_name == "face":
-                output_body.extend(records[int(i)] for i in kept_face_ids)
+            if element_name == "vertex":
+                output_body.extend(records[int(i)] for i in used_vertex_ids)
+            elif element_name == "face":
+                for face_id in kept_face_ids:
+                    fields = records[int(face_id)].split()
+                    vertex_count = int(fields[0])
+                    old_indices = np.asarray(fields[1:vertex_count + 1], dtype=int)
+                    new_indices = vertex_remap[old_indices]
+                    if np.any(new_indices < 0):
+                        raise ValueError(
+                            f"PLY face references a removed vertex: {source_path}"
+                        )
+                    remapped = [str(vertex_count), *(str(index) for index in new_indices)]
+                    remapped.extend(fields[vertex_count + 1:])
+                    output_body.append(" ".join(remapped) + "\n")
             else:
                 output_body.extend(records)
             offset += count
@@ -1064,16 +1144,25 @@ class LeafAreaIndexNewScene:
     @staticmethod
     def _write_obj_as_ply(output_path, vertices, faces, kept_face_ids):
         """Convert an OBJ leaf mesh to an ASCII PLY containing the retained faces."""
+        kept_face_ids = np.asarray(kept_face_ids, dtype=int)
+        kept_faces = faces[kept_face_ids, :3] - 1
+        used_vertex_ids = (
+            np.unique(kept_faces.reshape(-1))
+            if len(kept_faces)
+            else np.empty(0, dtype=int)
+        )
+        vertex_remap = np.full(len(vertices), -1, dtype=int)
+        vertex_remap[used_vertex_ids] = np.arange(len(used_vertex_ids))
+        remapped_faces = vertex_remap[kept_faces]
         with open(output_path, "w", encoding="utf-8") as output:
             output.write("ply\nformat ascii 1.0\n")
-            output.write(f"element vertex {len(vertices)}\n")
+            output.write(f"element vertex {len(used_vertex_ids)}\n")
             output.write("property float x\nproperty float y\nproperty float z\n")
             output.write(f"element face {len(kept_face_ids)}\n")
             output.write("property list uchar int vertex_indices\nend_header\n")
-            for vertex in vertices[:, :3]:
+            for vertex in vertices[used_vertex_ids, :3]:
                 output.write(f"{vertex[0]} {vertex[1]} {vertex[2]}\n")
-            for face_id in kept_face_ids:
-                face = faces[int(face_id)] - 1
+            for face in remapped_faces:
                 output.write(f"3 {face[0]} {face[1]} {face[2]}\n")
 
     def reduce_lai(self):
