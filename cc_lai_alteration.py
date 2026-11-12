@@ -19,6 +19,8 @@ from shapely.geometry import MultiPoint, Polygon
 from shapely.ops import unary_union
 import pathlib
 import pdb
+import os
+import tempfile
 import time
 
 from geometrical_calculations import polygon_area_3d
@@ -496,133 +498,341 @@ class CalculateVegAreaIndex:
         self.leaf_id = leaf_id
         self.terrain_id = terrain_id
         self.wood_id = wood_id
+        self.mesh_summary_path = pathlib.Path(scene).resolve().with_name(
+            pathlib.Path(scene).name + ".mesh_summary.npy"
+        )
 
-    def calculate_area_index(self, xmin, xmax, ymin, ymax, min_height=0.0, type="leaf"):
+    def _read_mesh_summary(self):
+        """Read the scene's per-mesh summary without loading Python objects."""
+        try:
+            data = np.load(self.mesh_summary_path, allow_pickle=False)
+        except FileNotFoundError:
+            return {}
+        except (ValueError, EOFError) as exc:
+            raise ValueError(f"Invalid mesh summary: {self.mesh_summary_path}") from exc
+        if not isinstance(data, np.ndarray):
+            data.close()
+            raise ValueError(f"Invalid mesh summary format: {self.mesh_summary_path}")
+        fields = ("path", "size", "mtime_ns", "ctime_ns", "has_faces",
+                  "minimum", "maximum", "area")
+        if (data.ndim != 1
+            or data.dtype.names != fields
+            or data.dtype["path"].kind != "U"
+            or any(data.dtype[name] != np.dtype("int64")
+                   for name in ("size", "mtime_ns", "ctime_ns"))
+            or data.dtype["has_faces"] != np.dtype("bool")
+            or any(data.dtype[name].subdtype != (np.dtype("float64"), (3,))
+                   for name in ("minimum", "maximum"))
+            or data.dtype["area"] != np.dtype("float64")):
+            raise ValueError(f"Invalid mesh summary format: {self.mesh_summary_path}")
+        if (len(np.unique(data["path"])) != len(data)
+            or np.any(data["path"] == "")
+            or np.any(data["size"] < 0)
+            or not np.isfinite(data["minimum"]).all()
+            or not np.isfinite(data["maximum"]).all()
+            or np.any(data["minimum"] > data["maximum"])
+            or not np.isfinite(data["area"]).all()
+            or np.any(data["area"] < 0)):
+            raise ValueError(f"Invalid mesh summary values: {self.mesh_summary_path}")
+        return {
+            str(record["path"]): (
+                int(record["size"]), int(record["mtime_ns"]), int(record["ctime_ns"]),
+                bool(record["has_faces"]), record["minimum"].copy(),
+                record["maximum"].copy(), float(record["area"]),
+            )
+            for record in data
+        }
+
+    def _write_mesh_summary(self, summary):
+        """Atomically save per-mesh extents and total areas beside the scene."""
+        width = max((len(path) for path in summary), default=1)
+        dtype = np.dtype([
+            ("path", f"U{width}"), ("size", "i8"), ("mtime_ns", "i8"),
+            ("ctime_ns", "i8"), ("has_faces", "?"), ("minimum", "f8", (3,)),
+            ("maximum", "f8", (3,)), ("area", "f8"),
+        ])
+        records = np.empty(len(summary), dtype=dtype)
+        for index, (path, values) in enumerate(summary.items()):
+            records[index] = (path, *values)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f".{self.mesh_summary_path.name}.",
+                suffix=".tmp", dir=self.mesh_summary_path.parent, delete=False,
+            ) as file:
+                temporary_path = pathlib.Path(file.name)
+                np.save(file, records, allow_pickle=False)
+            os.replace(temporary_path, self.mesh_summary_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _read_mesh_geometry(reader, path, suffix, fingerprint):
+        """Read one mesh and verify that it did not change during the read."""
+        if suffix == ".obj":
+            vertices, faces = reader.read_obj(path)
+        else:
+            vertices, faces = reader.read_ply(path)
+        stat = path.stat()
+        if fingerprint != (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+            raise RuntimeError(f"Mesh changed while reading: {path}")
+        vertices = np.asarray(vertices, dtype=float)
+        if not len(vertices) or not len(faces):
+            return vertices, np.empty((0, 3, 3)), np.empty(0)
+        triangles = vertices[np.array([face[:3] for face in faces], dtype=int) - 1]
+        areas = 0.5 * np.linalg.norm(
+            np.cross(triangles[:, 1] - triangles[:, 0],
+                     triangles[:, 2] - triangles[:, 0]), axis=1,
+        )
+        return vertices, triangles, areas
+
+    def calculate_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
+                             type="leaf", *, method="centroid"):
         """
-        Calculate the leaf/plant area index of the scene by reading in the vertices and 
-        faces of the scene's vegetation objects. Works for wood files where the stem
-        is made of facets. Will need a new method if the stem is made of cylinders.
+        Calculate vegetation surface area in one or more boxes.
 
-        Note: if you wish to calculate the LAI without the bounding box just use the 
-        total_leaf_area and divide by your specific ground area (e.g. canopy perimeter).
+        A small summary named <scene filename>.mesh_summary.npy is maintained
+        beside the scene. It stores each processed mesh's path, file metadata,
+        extent, and total face area, but no per-face data. Missing or changed
+        meshes are read to update it; subsequent calls can skip meshes outside
+        all boxes or use the total area when a box fully contains a mesh.
+        Partially overlapping meshes are read once and evaluated for all boxes.
+        Leaf and wood summaries are populated when each type is requested.
+        For LAI or PAI divide the returned area by the ground area.
 
         Parameters:
         -----------
-        xmin, xmax, ymin, ymax : float
-                                 XY bounds used to calculate ground area and
-                                 select fully contained mesh objects.
-        min_height : float, default=0.0
-                     Faces whose highest vertex is below this height are excluded.
+        xmin, xmax, ymin, ymax : float or one-dimensional array
+                                 Paired XY bounds for each box. Scalars and
+                                 length-one arrays broadcast to all boxes.
+        zmin, zmax : float or one-dimensional array, default=-inf, +inf
+                     Paired height bounds. Set only zmin to specify a minimum
+                     height without an upper limit.
         type : str, default='leaf'
                Mesh category to measure: 'leaf' or 'wood'.
+        method : {'centroid', 'clip'}, default='centroid'
+                 Assign whole faces by centroid or clip faces to the box.
+                 Boxes are lower-inclusive and upper-exclusive. Clipping is
+                 exact apart from floating-point error; faces lying exactly
+                 on an upper boundary are assigned to the adjacent box.
+
+        Raises:
+        -------
+        ValueError
+            If bounds, method, type, a mesh format, or the summary are invalid.
+        OSError
+            If a mesh or the summary cannot be read or written.
+        RuntimeError
+            If a mesh changes while it is being read.
 
         Returns:
         --------
-        total_area : float
-                     Sum of the selected mesh face areas.
-        ground_area : float
-                     Area of the XY bounding rectangle.
+        total_area : float or np.ndarray
+                     Surface area for each box, not divided by ground area.
+        ground_area : float or np.ndarray
+                      XY ground area for each box.
         area_by_mesh : np.ndarray, float
-                       Area contributed by each included mesh.
+                       Per-mesh contributions in scene order, shape (meshes,)
+                       for scalar bounds or (boxes, meshes) for array bounds.
+                       Only meshes whose bounds overlap at least one box are
+                       included; zero means that mesh contributes no area.
         """
-        area = []
+        if method not in ("centroid", "clip"):
+            raise ValueError("method must be 'centroid' or 'clip'.")
+        inputs = [np.asarray(value, dtype=float)
+                  for value in (xmin, xmax, ymin, ymax, zmin, zmax)]
+        if any(value.ndim > 1 for value in inputs):
+            raise ValueError("Bounds must be scalars or one-dimensional arrays.")
+        scalar = all(value.ndim == 0 for value in inputs)
+        try:
+            bounds = np.broadcast_arrays(*inputs)
+        except ValueError as exc:
+            raise ValueError("Bounds arrays must have matching lengths or length one.") from exc
+        bounds = [np.atleast_1d(value) for value in bounds]
+        xmin, xmax, ymin, ymax, zmin, zmax = bounds
+        if (not len(xmin) or not all(np.isfinite(value).all() for value in bounds[:4])
+            or np.isnan(zmin).any() or np.isnan(zmax).any()
+            or np.any(xmin >= xmax) or np.any(ymin >= ymax)
+            or np.any(zmin >= zmax)):
+            raise ValueError(
+                "Bounds must be ordered (xmin < xmax, ymin < ymax, zmin < zmax); "
+                "XY bounds must be finite and Z bounds must not be NaN."
+            )
+        nboxes = len(xmin)
+        lows = np.column_stack((xmin, ymin, zmin))
+        highs = np.column_stack((xmax, ymax, zmax))
+        per_mesh = []
         if type == "leaf":
             type_id = self.leaf_id
         elif type == "wood":
             type_id = self.wood_id
         else:
             raise ValueError(f"Invalid type: {type}. Choose from 'leaf' or 'wood'.")
+        reader = SceneReader(self.scene)
+        summary = self._read_mesh_summary()
+        summary_changed = not self.mesh_summary_path.exists()
         for filepath in self.filepaths:
             if type_id not in filepath:
                 continue
-            resolved_filepath = SceneReader(self.scene).resolve_filepath(filepath)
-            if pathlib.Path(filepath).suffix.lower() == ".obj":
-                vertices, faces = SceneReader(self.scene).read_obj(resolved_filepath)
-            elif pathlib.Path(filepath).suffix.lower() == ".ply":
-                vertices, faces = SceneReader(self.scene).read_ply(resolved_filepath)
-            else:
+            suffix = pathlib.Path(filepath).suffix.lower()
+            if suffix not in (".obj", ".ply"):
                 raise ValueError(f"Unsupported file format: {filepath}")
+            resolved_filepath = pathlib.Path(reader.resolve_filepath(filepath)).resolve()
+            key = str(resolved_filepath)
+            stat = resolved_filepath.stat()
+            fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            entry = summary.get(key)
+            triangles = None
+            areas = None
+            if entry is None or entry[:3] != fingerprint:
+                vertices, triangles, areas = self._read_mesh_geometry(
+                    reader, resolved_filepath, suffix, fingerprint
+                )
+                has_faces = bool(len(triangles))
+                if has_faces:
+                    mesh_min, mesh_max = vertices.min(axis=0), vertices.max(axis=0)
+                    total = float(np.sum(areas))
+                    if not np.isfinite(mesh_min).all() or not np.isfinite(mesh_max).all() or not np.isfinite(total):
+                        raise ValueError(f"Mesh contains non-finite geometry: {resolved_filepath}")
+                else:
+                    mesh_min = mesh_max = np.zeros(3)
+                    total = 0.0
+                entry = (*fingerprint, has_faces, mesh_min, mesh_max, total)
+                summary[key] = entry
+                summary_changed = True
+            _, _, _, has_faces, mesh_min, mesh_max, total = entry
+            if not has_faces:
+                continue
+            overlaps = np.all((mesh_max >= lows) & (mesh_min < highs), axis=1)
+            if not np.any(overlaps):
+                continue
+            fully_contained = overlaps & np.all((mesh_min >= lows) & (mesh_max < highs), axis=1)
+            mesh_area = np.zeros(nboxes)
+            mesh_area[fully_contained] = total
+            partial = overlaps & ~fully_contained
+            if np.any(partial) and triangles is None:
+                _, triangles, areas = self._read_mesh_geometry(
+                    reader, resolved_filepath, suffix, fingerprint
+                )
+            if np.any(partial):
+                if method == "centroid":
+                    centroids = np.mean(triangles, axis=1)
+                else:
+                    face_min = np.min(triangles, axis=1)
+                    face_max = np.max(triangles, axis=1)
+            for index in np.flatnonzero(partial):
+                low, high = lows[index], highs[index]
+                if method == "centroid":
+                    selected = np.all((centroids >= low) & (centroids < high), axis=1)
+                    mesh_area[index] = np.sum(areas[selected])
+                else:
+                    candidates = np.all((face_max >= low) & (face_min < high), axis=1)
+                    contained = candidates & np.all((face_min >= low) & (face_max <= high), axis=1)
+                    mesh_area[index] = np.sum(areas[contained])
+                    for triangle in triangles[candidates & ~contained]:
+                        mesh_area[index] += self._clipped_triangle_area(triangle, low, high)
+            per_mesh.append(mesh_area)
 
-            minvx = np.min(np.array(vertices)[:, 0])
-            maxvx = np.max(np.array(vertices)[:, 0])
-            minvy = np.min(np.array(vertices)[:, 1])
-            maxvy = np.max(np.array(vertices)[:, 1])
-            if minvx < xmin or maxvx > xmax or minvy < ymin or maxvy > ymax:
-                continue  # skip this vegetation object if it is outside the bounding box
-
-            area_tree = []
-            for face in faces:
-                v1 = np.array(vertices[face[0] - 1])
-                v2 = np.array(vertices[face[1] - 1])
-                v3 = np.array(vertices[face[2] - 1])
-                if np.max([v1[2], v2[2], v3[2]]) < min_height:
-                    continue  # skip this face if it is below the minimum height
-                tarea = self.calculate_area_triangle(v1, v2, v3)
-                area_tree.append(tarea)
-
-            area.append(np.sum(area_tree))
-
-        total_area = np.sum(area)
+        if summary_changed:
+            self._write_mesh_summary(summary)
+        area_by_mesh = np.stack(per_mesh, axis=1) if per_mesh else np.zeros((nboxes, 0))
+        total_area = np.sum(area_by_mesh, axis=1)
         ground_area = (xmax - xmin) * (ymax - ymin)
-        return total_area, ground_area, np.array(area)
+        if scalar:
+            return total_area[0], ground_area[0], area_by_mesh[0]
+        return total_area, ground_area, area_by_mesh
 
-    def calculate_leaf_area_index(self, xmin, xmax, ymin, ymax, min_height=0.0):
+    @staticmethod
+    def _clipped_triangle_area(triangle, low, high):
+        """Clip a triangle to an axis-aligned box and return its 3D area."""
+        polygon = list(triangle)
+        for axis in range(3):
+            for bound, lower in ((low[axis], True), (high[axis], False)):
+                if not np.isfinite(bound):
+                    continue
+                if not polygon:
+                    return 0.0
+                clipped = []
+                previous = polygon[-1]
+                previous_inside = previous[axis] >= bound if lower else previous[axis] <= bound
+                for current in polygon:
+                    current_inside = current[axis] >= bound if lower else current[axis] <= bound
+                    if current_inside != previous_inside:
+                        fraction = (bound - previous[axis]) / (current[axis] - previous[axis])
+                        clipped.append(previous + fraction * (current - previous))
+                    if current_inside:
+                        clipped.append(current)
+                    previous, previous_inside = current, current_inside
+                polygon = clipped
+        if len(polygon) < 3:
+            return 0.0
+        polygon = np.asarray(polygon)
+        edges = polygon[1:] - polygon[0]
+        return float(0.5 * np.linalg.norm(np.cross(edges[:-1], edges[1:]).sum(axis=0)))
+
+    def calculate_leaf_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
+                                  *, method="centroid"):
         """
         Calculate the leaf area index (LAI) of the scene.
 
         Parameters:
         -----------
-        xmin, xmax, ymin, ymax : float
-                                 XY bounds used to calculate ground area and
-                                 select fully contained leaf meshes.
-        min_height : float, default=0.0
-                     Faces whose highest vertex is below this height are excluded.
+        xmin, xmax, ymin, ymax : float or one-dimensional array
+                                 Paired XY bounds passed to calculate_area_index.
+        zmin, zmax : float or one-dimensional array, default=-inf, +inf
+                     Paired height bounds passed to calculate_area_index.
+        method : {'centroid', 'clip'}, default='centroid'
+                 How faces are assigned to each box.
 
         Returns:
         --------
-        total_leaf_area : float
-                          Sum of the leaf mesh face areas.
-        ground_area : float
-                      Area of the XY bounding rectangle.
+        total_leaf_area : float or np.ndarray
+                          Leaf area in each box.
+        ground_area : float or np.ndarray
+                      XY ground area of each box.
         leaf_area : np.ndarray, float
-                    Leaf area contributed by each included mesh.
+                    Per-mesh contributions; see calculate_area_index for shape.
         """
-        total_leaf_area, ground_area, leaf_area = self.calculate_area_index(xmin, xmax, ymin, ymax, 
-                                                                            min_height=min_height, 
-                                                                            type="leaf")
+        total_leaf_area, ground_area, leaf_area = self.calculate_area_index(
+            xmin, xmax, ymin, ymax, zmin=zmin, zmax=zmax, type="leaf", method=method
+        )
         return total_leaf_area, ground_area, leaf_area
 
-    def calculate_plant_area_index(self, xmin, xmax, ymin, ymax, min_height=0.0):
+    def calculate_plant_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
+                                   *, method="centroid"):
         """
         Calculate the plant area index (PAI) of the scene.
 
         Parameters:
         -----------
-        xmin, xmax, ymin, ymax : float
-                                 XY bounds used to calculate ground area and
-                                 select fully contained meshes.
-        min_height : float, default=0.0
-                     Faces whose highest vertex is below this height are excluded.
+        xmin, xmax, ymin, ymax : float or one-dimensional array
+                                 Paired XY bounds passed to calculate_area_index.
+        zmin, zmax : float or one-dimensional array, default=-inf, +inf
+                     Paired height bounds passed to calculate_area_index.
+        method : {'centroid', 'clip'}, default='centroid'
+                 How faces are assigned to each box.
 
         Returns:
         --------
-        total_plant_area : float
-                           Sum of leaf and wood mesh face areas.
-        ground_area : float
-                      Area of the XY bounding rectangle.
+        total_plant_area : float or np.ndarray
+                           Leaf and wood area in each box.
+        ground_area : float or np.ndarray
+                      XY ground area of each box.
         plant_area : np.ndarray, float
-                     Leaf and wood area contributed by each included mesh.
+                     Leaf and wood contributions; see calculate_area_index
+                     for shape. Leaf meshes precede wood meshes.
         """
-        total_leaf_area, ground_area, leaf_area = self.calculate_area_index(xmin, xmax, ymin, ymax, 
-                                                                            min_height=min_height, 
-                                                                            type="leaf")
-        total_wood_area, _, wood_area = self.calculate_area_index(xmin, xmax, ymin, ymax, 
-                                                                  min_height=min_height, 
-                                                                  type="wood")
+        total_leaf_area, ground_area, leaf_area = self.calculate_area_index(
+            xmin, xmax, ymin, ymax, zmin=zmin, zmax=zmax, type="leaf", method=method
+        )
+        total_wood_area, _, wood_area = self.calculate_area_index(
+            xmin, xmax, ymin, ymax, zmin=zmin, zmax=zmax, type="wood", method=method
+        )
         total_plant_area = total_leaf_area + total_wood_area
         # Leaf and wood object counts need not match; concatenate their areas rather
         # than requiring the arrays to have the same length.
-        plant_area = np.concatenate((leaf_area, wood_area))
+        plant_area = np.concatenate((leaf_area, wood_area), axis=-1)
         return total_plant_area, ground_area, np.array(plant_area)
 
     def calculate_leaf_area_index_profile(
@@ -695,8 +905,10 @@ class CalculateVegAreaIndex:
         Calculate per-height-band LAI or PAI contributions from scene meshes.
 
         Each triangular face is assigned to a height band using its mean vertex
-        height. Its 3D surface area is divided by the XY ground area, so summing
-        the profile values gives the corresponding scene-wide index.
+        height. Its 3D surface area is divided by the XY ground area. Unlike
+        calculate_area_index, this method selects only meshes fully contained
+        in the XY bounds and uses face-height overlap for min_height, so the
+        summed profile can differ when meshes or faces cross those limits.
 
         Parameters:
         -----------
