@@ -4,11 +4,16 @@ import contextlib
 import io
 import pathlib
 import struct
+import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
+import h5py
 import laspy
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 import comparing_occlusion_LAI as occlusion_lai
 
@@ -104,6 +109,157 @@ class OcclusionAnalysisTests(unittest.TestCase):
 class PointCloudVegetationAnalysisTests(unittest.TestCase):
     """Verify the point-cloud template routes and sequences its extension hooks."""
 
+    @staticmethod
+    def _hdf5_tables(classified=False):
+        pulse_dtype = [
+            ("pulse_id", "u8"), ("timestamp", "f8"),
+            ("origin_x", "f8"), ("origin_y", "f8"), ("origin_z", "f8"),
+            ("dir_x", "f4"), ("dir_y", "f4"), ("dir_z", "f4"),
+            ("return_count", "u1"),
+        ]
+        return_dtype = [
+            ("pulse_id", "u8"), ("return_num", "u1"),
+            ("x", "f8"), ("y", "f8"), ("z", "f8"), ("range", "f4"),
+            ("reflectance", "f4"), ("amplitude", "f4"), ("deviation", "u2"),
+        ]
+        if classified:
+            return_dtype.append(("classification", "u1"))
+        pulses = np.zeros(3, dtype=pulse_dtype)
+        pulses["pulse_id"] = [2**63 + 4, 2, 1]
+        pulses["return_count"] = [2, 0, 1]
+        pulses["dir_x"] = np.sin(np.radians(52.5))
+        pulses["dir_z"] = np.cos(np.radians(52.5))
+        returns = np.zeros(3, dtype=return_dtype)
+        returns["pulse_id"] = [1, 2**63 + 4, 2**63 + 4]
+        returns["return_num"] = [1, 2, 1]
+        returns["z"] = [2, 1, 3]
+        if classified:
+            returns["classification"] = [1, 2, 3]
+        return pulses, returns
+
+    @staticmethod
+    def _write_hdf5(path, pulses, returns, **attrs):
+        with h5py.File(path, "w") as file:
+            file.create_dataset("pulses", data=pulses, compression="gzip")
+            file.create_dataset("returns", data=returns, compression="gzip")
+            for name, value in attrs.items():
+                file.attrs[name] = value
+
+    def test_hdf5_sources_associate_returns_and_preserve_no_return_pulses(self):
+        pulses, returns = self._hdf5_tables()
+        settings = occlusion_lai.CaldersProfileInput(scans=(), max_height=4, height_bin_size=1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.h5"
+            self._write_hdf5(path, pulses, returns, incl_roll=0., incl_pitch=0.)
+            for source in ("simulated", "real"):
+                with self.subTest(source=source):
+                    analysis = occlusion_lai.PointCloudVegetationAnalysis(
+                        path, source, "ground", ground_elevation=0,
+                        calders_settings=settings, zenith_range=(50, 55),
+                    )
+                    data = analysis.load_point_cloud()
+                    scan = analysis.prepare_point_cloud(data).scans[0]
+                    np.testing.assert_array_equal(scan.return_pulse_index, [2, 0, 0])
+                    np.testing.assert_array_equal(scan.pulse_return_count, [2, 0, 1])
+                    np.testing.assert_array_equal(scan.return_height, [2, 1, 3])
+                    self.assertIsNone(scan.return_classification)
+                    profile, _ = analysis.run()
+                    np.testing.assert_allclose(profile["pgap"], [[1, 1, 2/3, 1/3]])
+                    prepared = analysis.prepare_point_cloud(data)
+                    prepared.excluded_classes = (2,)
+                    with self.assertRaisesRegex(ValueError, "Class exclusions"):
+                        analysis.calculate_pavd_profile(prepared)
+                    analysis.calders_settings = occlusion_lai.CaldersProfileInput(
+                        scans=(), excluded_classes=(2,)
+                    )
+                    with self.assertRaisesRegex(ValueError, "Class exclusions"):
+                        analysis.prepare_point_cloud(data)
+
+    def test_hdf5_inclination_levels_directions_and_points(self):
+        pulses, returns = self._hdf5_tables()
+        rotation = Rotation.from_euler("YX", [0.2, -0.3])
+        directions = np.column_stack([pulses[f"dir_{axis}"] for axis in "xyz"])
+        coordinates = np.column_stack([returns[axis] for axis in "xyz"])
+        tilted_directions = rotation.inv().apply(directions)
+        tilted_points = rotation.inv().apply(coordinates)
+        for i, axis in enumerate("xyz"):
+            pulses[f"dir_{axis}"] = tilted_directions[:, i]
+            returns[axis] = tilted_points[:, i]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.hdf5"
+            self._write_hdf5(path, pulses, returns, incl_roll=-0.3, incl_pitch=0.2)
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(
+                path, "real", "ground", ground_elevation=[0, 0.5, 1]
+            )
+            scan = analysis.prepare_point_cloud(analysis.load_point_cloud()).scans[0]
+            np.testing.assert_allclose(scan.pulse_zenith, 52.5, atol=1e-5)
+            np.testing.assert_allclose(scan.pulse_azimuth, 0, atol=1e-5)
+            np.testing.assert_allclose(scan.return_height, [2, 0.5, 2], atol=1e-12)
+
+    def test_hdf5_simulated_classification_and_missing_inclination(self):
+        pulses, returns = self._hdf5_tables(classified=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.h5"
+            self._write_hdf5(path, pulses, returns)
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(
+                path, "simulated", "ground", ground_elevation=0,
+                zenith_range=(50, 55),
+                calders_settings=occlusion_lai.CaldersProfileInput(
+                    scans=(), max_height=4, height_bin_size=1, excluded_classes=(3,)
+                ),
+            )
+            with self.assertWarnsRegex(UserWarning, "assuming coordinates are already level"):
+                prepared = analysis.prepare_point_cloud(analysis.load_point_cloud())
+            np.testing.assert_array_equal(prepared.scans[0].return_classification, [1, 2, 3])
+            np.testing.assert_allclose(
+                analysis.calculate_pavd_profile(prepared)["pgap"], [[1, 1, 2/3, 2/3]]
+            )
+
+    def test_hdf5_rejects_malformed_pulses_and_metadata(self):
+        pulses, returns = self._hdf5_tables()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.h5"
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(path, "real", "ground", ground_elevation=0)
+            for failure in ("unknown_pulse", "count", "return_number", "duplicate_id", "direction", "inclination"):
+                with self.subTest(failure=failure):
+                    ps, rs = pulses.copy(), returns.copy()
+                    attrs = {"incl_roll": 0., "incl_pitch": 0.}
+                    if failure == "unknown_pulse":
+                        rs["pulse_id"][0] = 999
+                    elif failure == "count":
+                        ps["return_count"][0] = 1
+                    elif failure == "return_number":
+                        rs["return_num"][1] = 1
+                    elif failure == "duplicate_id":
+                        ps["pulse_id"][1] = ps["pulse_id"][0]
+                    elif failure == "direction":
+                        ps["dir_x"][0] = 3
+                    else:
+                        del attrs["incl_pitch"]
+                    self._write_hdf5(path, ps, rs, **attrs)
+                    with self.assertRaises(ValueError):
+                        analysis.prepare_point_cloud(analysis.load_point_cloud())
+            with h5py.File(path, "w") as file:
+                file.create_dataset("pulses", data=pulses)
+                file.create_dataset("returns", data=np.zeros(1, dtype=[("pulse_id", "u8")]))
+            with self.assertRaisesRegex(ValueError, "missing field"):
+                analysis.load_point_cloud()
+
+    def test_hdf5_scan_with_no_returns(self):
+        pulses, returns = self._hdf5_tables()
+        pulses["return_count"] = 0
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "empty.h5"
+            self._write_hdf5(path, pulses, returns[:0], incl_roll=0., incl_pitch=0.)
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(
+                path, "real", "ground", ground_elevation=0, zenith_range=(50, 55),
+                calders_settings=occlusion_lai.CaldersProfileInput(
+                    scans=(), max_height=2, height_bin_size=1
+                ),
+            )
+            profile, _ = analysis.run()
+            np.testing.assert_array_equal(profile["pgap"], [[1, 1]])
+
     def test_routes_both_sources_and_all_platforms(self):
         """Check each source/platform combination follows the same workflow."""
 
@@ -160,6 +316,37 @@ class PointCloudVegetationAnalysisTests(unittest.TestCase):
                     method(*args)
         with self.assertRaisesRegex(TypeError, "HeliosSimulationData"):
             analysis.prepare_ground_point_cloud(object())
+
+    def test_load_riegl_rxp_preserves_raw_records(self):
+        """Read RXP metadata, returns, and pulse records through the native extension."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.RXP"
+            path.touch()
+            metadata = {"TYPE_ID": "scanner"}
+            points = np.array([(1, 2.0)], dtype=[("pulse_id", "u8"), ("z", "f8")])
+            pulses = np.array([(1, 1), (2, 0)], dtype=[("pulse_id", "u8"), ("target_count", "u1")])
+            reader = mock.Mock(return_value=(metadata, points, pulses))
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(path, "real", "ground")
+
+            with mock.patch.dict(sys.modules, {"riegl_rxp": types.SimpleNamespace(readFile=reader)}):
+                data = analysis.load_point_cloud()
+
+            reader.assert_called_once_with(str(path.resolve()))
+            self.assertIs(data.metadata, metadata)
+            self.assertIs(data.points, points)
+            self.assertIs(data.pulses, pulses)
+            with self.assertRaisesRegex(NotImplementedError, "pulse completeness"):
+                analysis.prepare_ground_point_cloud(data)
+
+    def test_load_riegl_rxp_reports_missing_extension(self):
+        """A missing proprietary-backed extension is reported explicitly."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "scan.rxp"
+            path.touch()
+            analysis = occlusion_lai.PointCloudVegetationAnalysis(path, "real", "ground")
+            with mock.patch.dict(sys.modules, {"riegl_rxp": None}):
+                with self.assertRaisesRegex(ImportError, "riegl_rxp extension built with RiVLib"):
+                    analysis.load_point_cloud()
 
     def test_load_helios_las_pulses_and_waveform_text(self):
         """Read LAS returns and preserve separately provided pulse and waveform data."""

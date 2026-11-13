@@ -11,6 +11,7 @@
 
 import json
 import struct
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -164,6 +165,46 @@ class HeliosSimulationData:
 
 
 @dataclass
+class RieglRXPData:
+    """
+    Raw metadata, points, and pulses decoded from one RIEGL RXP scan.
+
+    The arrays and metadata are returned by Occpy's riegl_rxp extension in
+    scanner coordinates. No pose transformation, ground correction, pulse
+    reconstruction, or PAVD preparation is applied.
+    """
+
+    metadata: dict
+    points: np.ndarray
+    pulses: np.ndarray
+
+
+@dataclass
+class HDF5ScanData:
+    """
+    Untransformed pulse and return tables and root metadata from an HDF5 scan.
+
+    The one-dimensional compound datasets /pulses and /returns follow the
+    dual-table schema. Pulse fields are pulse_id, timestamp, origin_x/y/z,
+    dir_x/y/z and return_count; return fields are pulse_id, return_num, x/y/z,
+    range, reflectance, amplitude and deviation. An optional integer
+    classification field is used only for simulated data. Both tables and all
+    their fields are loaded into memory, preserving additional fields.
+
+    Root attributes incl_roll and incl_pitch are optional, but must be
+    supplied together in radians. They specify the scanner-to-level
+    right-handed rotation Ry(incl_pitch) @ Rx(incl_roll), without yaw or
+    translation. Only use these attributes when the input coordinates have
+    not already been levelled and the producer uses this exact convention.
+    No waveform datasets are loaded.
+    """
+
+    pulses: np.ndarray
+    returns: np.ndarray
+    metadata: dict
+
+
+@dataclass
 class CaldersScan:
     """
     Pulse and return data for one ground-based scan at a single location.
@@ -188,8 +229,9 @@ class CaldersScan:
                     Ground-referenced return heights in metres.
     return_number : array-like
                     One-based return number within its pulse.
-    return_classification : array-like
-                            Classification code for each return.
+    return_classification : array-like or None
+                            Classification code for each return, or None if
+                            unavailable. Class exclusions require these codes.
     min_zenith, max_zenith : float
                              Zenith limits in degrees for this scan.
     min_azimuth, max_azimuth : float
@@ -202,7 +244,7 @@ class CaldersScan:
     return_pulse_index: ArrayLike
     return_height: ArrayLike
     return_number: ArrayLike
-    return_classification: ArrayLike
+    return_classification: ArrayLike | None
     min_zenith: float = 35.0
     max_zenith: float = 70.0
     min_azimuth: float = 0.0
@@ -231,6 +273,7 @@ class CaldersProfileInput:
                count only the first return.
     excluded_classes : sequence of int
                        Return classifications to exclude from interception.
+                       Requires classification data for every scan.
     total_pai_method : str
                        Scale the solid-angle profile using 'hinge', 'linear',
                        or 'external' PAI.
@@ -409,8 +452,9 @@ class PointCloudVegetationAnalysis:
     Subclasses provide the relevant input reader, acquisition-specific
     preparation, and any alternative processing method. The base class provides
     the Calders et al. (2014) single-position ground-scan profile calculation
-    and PAVD integration. HELIOS++ single-position ground scans can be
-    prepared; real-data loading and other platforms remain hooks.
+    and PAVD integration. HELIOS++ LAS and dual-table HDF5 single-position
+    ground scans can be prepared. RIEGL RXP scans can be read but not yet
+    prepared for PAVD. Other real-data formats and platforms remain hooks.
     """
 
     def __init__(self, point_cloud_path, source, platform, *, pulse_path=None,
@@ -433,9 +477,9 @@ class PointCloudVegetationAnalysis:
         waveform_path : str or pathlib.Path or None, default=None
                         Optional HELIOS++ --writeWaveform text file.
         ground_elevation : float, array-like, or None, default=None
-                           Ground elevation in LAS coordinates, either a flat
-                           value or one value per LAS return in its original
-                           order. Required for HELIOS++ ground preparation.
+                           Ground elevation in the levelled coordinate frame,
+                           either a flat value or one value per return in its
+                           original order. Required for ground preparation.
         calders_settings : CaldersProfileInput or None
                            Profile settings with an empty scans tuple. Defaults
                            to CaldersProfileInput defaults.
@@ -507,7 +551,7 @@ class PointCloudVegetationAnalysis:
 
     def load_simulated_point_cloud(self):
         """
-        Read HELIOS++ LAS returns and optional pulse and waveform outputs.
+        Read HDF5 or HELIOS++ LAS returns and optional pulse and waveform outputs.
 
         Point records, including extra dimensions, are loaded into memory with
         laspy. Pulse data are loaded when supplied; waveform text records and
@@ -519,8 +563,8 @@ class PointCloudVegetationAnalysis:
 
         Returns:
         --------
-        point_cloud : HeliosSimulationData
-                      Loaded LAS data and separately supplied HELIOS++ outputs.
+        point_cloud : HeliosSimulationData or HDF5ScanData
+                      Loaded LAS or HDF5 data.
 
         Raises:
         -------
@@ -531,9 +575,11 @@ class PointCloudVegetationAnalysis:
         OSError
             If a requested input file cannot be read.
         """
+        path = Path(self.point_cloud_path).resolve()
+        if path.suffix.lower() in (".h5", ".hdf5"):
+            return self._load_hdf5_scan(path)
         import laspy
 
-        path = Path(self.point_cloud_path).resolve()
         if path.suffix.lower() not in (".las", ".laz"):
             raise ValueError(f"Expected a LAS or LAZ point cloud: {path}")
         if self.waveform_path is not None:
@@ -560,24 +606,90 @@ class PointCloudVegetationAnalysis:
 
     def load_real_point_cloud(self):
         """
-        Read measured point-cloud data.
+        Read an HDF5 scan or a RIEGL RXP scan using Occpy's native extension.
+
+        Both formats are loaded into memory without transforming them. RXP
+        requires Occpy's extension built with RIEGL RiVLib; HDF5 requires
+        h5py and does not require RIEGL software. Reading does not establish
+        whether the scan contains all emitted pulses.
 
         Returns:
         --------
-        point_cloud : object
-                      Measured points and any required acquisition metadata.
+        point_cloud : RieglRXPData or HDF5ScanData
+                      Raw metadata, return records, and pulse records.
 
         Raises:
         -------
         NotImplementedError
-            Until a real-data reader is implemented.
+            If the file format is not supported.
+        ImportError
+            If the native RXP extension is unavailable.
+        OSError
+            If the input file cannot be accessed.
         """
-        # Add measured-data IO, coordinate information, and metadata here.
-        raise NotImplementedError("Implement a real point-cloud reader.")
+        path = Path(self.point_cloud_path).resolve()
+        if path.suffix.lower() in (".h5", ".hdf5"):
+            return self._load_hdf5_scan(path)
+        if path.suffix.lower() != ".rxp":
+            raise NotImplementedError("Real point-cloud loading supports HDF5 and RIEGL RXP files only.")
+        if not path.is_file():
+            raise FileNotFoundError(f"RIEGL RXP file not found: {path}")
+        try:
+            import riegl_rxp
+        except ModuleNotFoundError as exc:
+            if exc.name != "riegl_rxp":
+                raise
+            raise ImportError(
+                "RIEGL RXP reading requires Occpy's riegl_rxp extension built with RiVLib."
+            ) from exc
+        metadata, points, pulses = riegl_rxp.readFile(str(path))
+        return RieglRXPData(metadata, points, pulses)
+
+    def _load_hdf5_scan(self, path):
+        """Read the complete dual-table HDF5 scan and its root attributes."""
+        import h5py
+
+        if self.pulse_path is not None or self.waveform_path is not None:
+            raise ValueError("pulse_path and waveform_path are not used with HDF5 input.")
+        fields = {
+            "pulses": {
+                "pulse_id": ("u", 8), "timestamp": ("f", 8),
+                "origin_x": ("f", 8), "origin_y": ("f", 8), "origin_z": ("f", 8),
+                "dir_x": ("f", 4), "dir_y": ("f", 4), "dir_z": ("f", 4),
+                "return_count": ("u", 1),
+            },
+            "returns": {
+                "pulse_id": ("u", 8), "return_num": ("u", 1),
+                "x": ("f", 8), "y": ("f", 8), "z": ("f", 8),
+                "range": ("f", 4), "reflectance": ("f", 4),
+                "amplitude": ("f", 4), "deviation": ("u", 2),
+            },
+        }
+        with h5py.File(path, "r") as file:
+            tables = {}
+            for name, required in fields.items():
+                if name not in file or not isinstance(file[name], h5py.Dataset):
+                    raise ValueError(f"HDF5 must contain a '{name}' dataset.")
+                dataset = file[name]
+                if dataset.ndim != 1 or dataset.dtype.names is None:
+                    raise ValueError(f"HDF5 '{name}' must be a one-dimensional compound dataset.")
+                for field, (kind, size) in required.items():
+                    if field not in dataset.dtype.names:
+                        raise ValueError(f"HDF5 '{name}' is missing field '{field}'.")
+                    dtype = dataset.dtype.fields[field][0]
+                    if dtype.kind != kind or dtype.itemsize != size or dtype.shape:
+                        raise ValueError(f"HDF5 '{name}.{field}' must be a scalar {kind}{size} field.")
+                tables[name] = dataset[:]
+            metadata = dict(file.attrs.items())
+        return HDF5ScanData(tables["pulses"], tables["returns"], metadata)
 
     def prepare_point_cloud(self, point_cloud):
         """
         Select preparation for the configured acquisition platform.
+
+        Platform-specific preparation also depends on the data representation
+        returned by the reader. Not every source and platform combination is
+        implemented.
 
         Parameters:
         -----------
@@ -597,19 +709,34 @@ class PointCloudVegetationAnalysis:
 
     def prepare_ground_point_cloud(self, point_cloud):
         """
-        Prepare HELIOS++ single-position ground data for Calders et al. (2014).
+        Prepare single-position ground data for Calders et al. (2014).
 
-        Match LAS fullwaveIndex to pulse_index, retain no-return pulses and
-        calculate viewing angles from the emitted beam direction. Pulse files
-        must contain all emitted pulses from the same leg as the LAS file;
-        this cannot be verified solely from the detected returns. Heights are
-        referenced using the explicitly supplied ground elevations. The
-        waveform samples are not required by the discrete-return calculation.
+        Dual-table HDF5 input is supported for both sources. Optional root
+        attributes incl_roll and incl_pitch must both be present in radians.
+        They define the right-handed scanner-to-level rotation Ry(pitch) @
+        Rx(roll), with no yaw or translation; coordinates and directions must
+        be unlevelled when they are supplied. Without them coordinates are
+        assumed level and a warning is emitted. Ground elevation must be in
+        the resulting level frame. The producer must supply every emitted pulse,
+        including no-return pulses; completeness cannot be inferred here.
+        Each HDF5 file must represent one stationary scanner position; this
+        cannot be established from the per-shot beam origins alone.
+        A simulated HDF5 return table may contain a 'classification' integer
+        field; otherwise class exclusions are unavailable.
+
+        For HELIOS++, match LAS fullwaveIndex to
+        pulse_index, retain no-return pulses and calculate viewing angles
+        from the emitted beam direction. Pulse files must contain all emitted
+        pulses from the same leg as the LAS file; this cannot be verified
+        solely from the detected returns. Heights are referenced using the
+        explicitly supplied ground elevations. Waveform samples are not
+        required by the discrete-return calculation.
 
         Parameters:
         -----------
-        point_cloud : HeliosSimulationData
-                      HELIOS++ LAS data and complete pulse table.
+        point_cloud : HeliosSimulationData, HDF5ScanData, or RieglRXPData
+                      Loaded ground-scan data. Native RXP preparation is not
+                      yet supported.
 
         Returns:
         --------
@@ -620,10 +747,19 @@ class PointCloudVegetationAnalysis:
         -------
         TypeError
             If the reader returned an unsupported data representation.
+        NotImplementedError
+            If the input is a RIEGL RXP scan, which is not yet prepared.
         ValueError
             If the pulse file, ground elevations, scan, or LAS returns are
             missing, ambiguous, or inconsistent.
         """
+        if isinstance(point_cloud, HDF5ScanData):
+            return self._prepare_hdf5_ground_scan(point_cloud)
+        if isinstance(point_cloud, RieglRXPData):
+            raise NotImplementedError(
+                "RIEGL RXP preparation for Calders profiles is not implemented; "
+                "pulse completeness and ground-referenced geometry must be established."
+            )
         if not isinstance(point_cloud, HeliosSimulationData):
             raise TypeError("Ground preparation requires HeliosSimulationData.")
         pulses = point_cloud.pulses
@@ -675,21 +811,7 @@ class PointCloudVegetationAnalysis:
         ):
             raise ValueError("LAS return numbers or per-pulse return counts are inconsistent.")
 
-        if self.ground_elevation is None:
-            raise ValueError("ground_elevation is required for ground-referenced return heights.")
-        ground = np.asarray(self.ground_elevation, dtype=float)
-        if (ground.ndim != 0 and ground.shape != (len(las.points),)) or not np.isfinite(ground).all():
-            raise ValueError("ground_elevation must be finite and scalar or one value per LAS return.")
-        height = np.asarray(las.z) - ground
-        if not np.isfinite(height).all():
-            raise ValueError("Ground-referenced return heights must be finite.")
-        zenith_range = np.asarray(self.zenith_range, dtype=float)
-        azimuth_range = np.asarray(self.azimuth_range, dtype=float)
-        if (zenith_range.shape != (2,) or not np.isfinite(zenith_range).all()
-            or not 0 <= zenith_range[0] < zenith_range[1] <= 90
-            or azimuth_range.shape != (2,) or not np.isfinite(azimuth_range).all()
-            or not 0 <= azimuth_range[0] <= azimuth_range[1] <= 360):
-            raise ValueError("Scan angular ranges must be ordered and in degrees.")
+        height, zenith_range, azimuth_range = self._ground_heights_and_limits(np.asarray(las.z))
         scan = CaldersScan(
             pulse_zenith=zenith, pulse_azimuth=azimuth,
             pulse_return_count=counts, return_pulse_index=parent,
@@ -699,6 +821,103 @@ class PointCloudVegetationAnalysis:
             min_azimuth=float(azimuth_range[0]), max_azimuth=float(azimuth_range[1]),
         )
         return replace(self.calders_settings, scans=(scan,))
+
+    def _prepare_hdf5_ground_scan(self, data: HDF5ScanData) -> CaldersProfileInput:
+        """Associate HDF5 returns with pulses and prepare a level ground scan."""
+        pulses, returns = data.pulses, data.returns
+        if not len(pulses):
+            raise ValueError("HDF5 must contain at least one emitted pulse.")
+        ids = pulses["pulse_id"]
+        order = np.argsort(ids)
+        sorted_ids = ids[order]
+        if np.any(sorted_ids[1:] == sorted_ids[:-1]):
+            raise ValueError("HDF5 pulse IDs must be unique.")
+        return_ids = returns["pulse_id"]
+        positions = np.searchsorted(sorted_ids, return_ids)
+        if np.any(positions == len(ids)) or np.any(
+            sorted_ids[np.minimum(positions, len(ids) - 1)] != return_ids
+        ):
+            raise ValueError("Some HDF5 returns have no matching pulse.")
+        parent = order[positions]
+        counts = pulses["return_count"].astype(np.int64)
+        numbers = returns["return_num"].astype(np.int64)
+        if (
+            not np.array_equal(np.bincount(parent, minlength=len(ids)), counts)
+            or np.any(numbers < 1) or np.any(numbers > counts[parent])
+            or len(np.unique(np.column_stack((parent, numbers)), axis=0)) != len(parent)
+        ):
+            raise ValueError("HDF5 return numbers and pulse return counts are inconsistent.")
+
+        origins = np.column_stack([pulses[f"origin_{axis}"] for axis in "xyz"])
+        directions = np.column_stack([pulses[f"dir_{axis}"] for axis in "xyz"]).astype(float)
+        points = np.column_stack([returns[axis] for axis in "xyz"])
+        if not all(np.isfinite(a).all() for a in (origins, directions, points)):
+            raise ValueError("HDF5 pulse geometry and return coordinates must be finite.")
+        lengths = np.linalg.norm(directions, axis=1)
+        if not np.all(np.isclose(lengths, 1.0, rtol=1e-5, atol=1e-6)):
+            raise ValueError("HDF5 pulse directions must be unit vectors.")
+
+        attrs = data.metadata
+        has_roll, has_pitch = "incl_roll" in attrs, "incl_pitch" in attrs
+        if has_roll != has_pitch:
+            raise ValueError("HDF5 inclination requires both incl_roll and incl_pitch.")
+        if has_roll:
+            angles = np.asarray([attrs["incl_roll"], attrs["incl_pitch"]], dtype=float)
+            if angles.shape != (2,) or not np.isfinite(angles).all():
+                raise ValueError("HDF5 inclination angles must be finite scalars in radians.")
+            roll, pitch = angles
+            cr, sr = np.cos(roll), np.sin(roll)
+            cp, sp = np.cos(pitch), np.sin(pitch)
+            rotation = np.array([
+                [cp, sp * sr, sp * cr],
+                [0.0, cr, -sr],
+                [-sp, cp * sr, cp * cr],
+            ])
+            directions = directions @ rotation.T
+            points = points @ rotation.T
+        else:
+            warnings.warn(
+                "HDF5 inclination is absent; assuming coordinates are already level.",
+                UserWarning, stacklevel=2,
+            )
+        zenith = np.degrees(np.arccos(np.clip(directions[:, 2] / lengths, -1, 1)))
+        azimuth = np.degrees(np.arctan2(directions[:, 1], directions[:, 0])) % 360
+        height, zenith_range, azimuth_range = self._ground_heights_and_limits(points[:, 2])
+        classification = None
+        if self.source == "simulated" and "classification" in returns.dtype.names:
+            classification = returns["classification"]
+            if classification.ndim != 1 or not np.issubdtype(classification.dtype, np.integer):
+                raise ValueError("HDF5 return classifications must be scalar integers.")
+        if classification is None and len(self.calders_settings.excluded_classes):
+            raise ValueError("Class exclusions require return classifications.")
+        scan = CaldersScan(
+            pulse_zenith=zenith, pulse_azimuth=azimuth,
+            pulse_return_count=counts, return_pulse_index=parent,
+            return_height=height, return_number=numbers,
+            return_classification=classification,
+            min_zenith=float(zenith_range[0]), max_zenith=float(zenith_range[1]),
+            min_azimuth=float(azimuth_range[0]), max_azimuth=float(azimuth_range[1]),
+        )
+        return replace(self.calders_settings, scans=(scan,))
+
+    def _ground_heights_and_limits(self, z):
+        """Ground-reference return heights and validate the angular limits."""
+        if self.ground_elevation is None:
+            raise ValueError("ground_elevation is required for ground-referenced return heights.")
+        ground = np.asarray(self.ground_elevation, dtype=float)
+        if (ground.ndim != 0 and ground.shape != (len(z),)) or not np.isfinite(ground).all():
+            raise ValueError("ground_elevation must be finite and scalar or one value per return.")
+        height = z - ground
+        if not np.isfinite(height).all():
+            raise ValueError("Ground-referenced return heights must be finite.")
+        zenith_range = np.asarray(self.zenith_range, dtype=float)
+        azimuth_range = np.asarray(self.azimuth_range, dtype=float)
+        if (zenith_range.shape != (2,) or not np.isfinite(zenith_range).all()
+            or not 0 <= zenith_range[0] < zenith_range[1] <= 90
+            or azimuth_range.shape != (2,) or not np.isfinite(azimuth_range).all()
+            or not 0 <= azimuth_range[0] <= azimuth_range[1] <= 360):
+            raise ValueError("Scan angular ranges must be ordered and in degrees.")
+        return height, zenith_range, azimuth_range
 
     def prepare_uav_point_cloud(self, point_cloud):
         """
@@ -900,16 +1119,22 @@ class PointCloudVegetationAnalysis:
         parent = np.asarray(scan.return_pulse_index)
         return_height = np.asarray(scan.return_height, dtype=float)
         number = np.asarray(scan.return_number)
-        classification = np.asarray(scan.return_classification)
+        classification = (
+            None if scan.return_classification is None
+            else np.asarray(scan.return_classification)
+        )
+        if classification is None and len(config.excluded_classes):
+            raise ValueError("Class exclusions require return classifications.")
         if (
             any(a.ndim != 1 for a in
                 (pulse_zenith, pulse_azimuth, return_count, parent,
-                 return_height, number, classification))
+                 return_height, number))
             or len(pulse_zenith) != len(pulse_azimuth)
             or len(pulse_zenith) != len(return_count)
             or len(parent) != len(return_height)
             or len(parent) != len(number)
-            or len(parent) != len(classification)
+            or (classification is not None
+                and (classification.ndim != 1 or len(parent) != len(classification)))
         ):
             raise ValueError("Pulse and return arrays must be one-dimensional and aligned.")
         if (
@@ -919,8 +1144,10 @@ class PointCloudVegetationAnalysis:
             or np.any((pulse_azimuth < 0) | (pulse_azimuth > 360))
         ):
             raise ValueError("Pulse angles and return heights must be finite and valid.")
-        if not all(a.size == 0 or np.issubdtype(a.dtype, np.integer) for a in
-                   (return_count, parent, number, classification)):
+        if (not all(a.size == 0 or np.issubdtype(a.dtype, np.integer) for a in
+                    (return_count, parent, number))
+            or (classification is not None and classification.size != 0
+                and not np.issubdtype(classification.dtype, np.integer))):
             raise ValueError("Pulse counts, indices, return numbers, and classes must be integers.")
         return_count = return_count.astype(np.int64)
         parent = parent.astype(np.int64)
@@ -949,8 +1176,9 @@ class PointCloudVegetationAnalysis:
                 pulse_mask[parent] & (return_height > config.min_height)
                 & (return_height >= height[0])
                 & (return_height < height[-1] + config.height_bin_size)
-                & ~np.isin(classification, config.excluded_classes)
             )
+            if classification is not None:
+                selected &= ~np.isin(classification, config.excluded_classes)
             if not config.weighted:
                 selected &= number == 1
             indices = np.floor((return_height[selected] - height[0]) /
