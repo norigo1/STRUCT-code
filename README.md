@@ -1,7 +1,7 @@
-# [Harmonising forest structural metrics from LiDAR and passive optical instruments across scales (STRUCT) / STRUCT-code]
+# Harmonising forest structural metrics from LiDAR and passive optical instruments across scales (STRUCT) / STRUCT-code
 
 [![DOI](https://zenodo.org)](https://doi.org)
-[![License](https://shields.io)](LICENSE)
+[![License: GPL v3](https://shields.io)](https://gnu.org)
 
 > **Brief summary:** The software presented here gives users a suite of tools to set-up radiative transfer simulations and process their outputs to retrieve forest structural metrics.
 
@@ -70,13 +70,17 @@ To follow
 
 ## License
 
-This project is licensed under the **[GPL-3.0]** License — see the [LICENSE](https://www.gnu.org/licenses/gpl-3.0.en.html) file for details.
+This project is licensed under the **GPL-3.0** License — see the [LICENSE](https://www.gnu.org/licenses/gpl-3.0.en.html) file for details.
 
 ---
+## AI usage
 
+This package used Microsoft Copilot in the generation of the code in this library.
+
+----
 ## Funding Acknowledgment
 
-<img src="https://europa.eu" alt="Funded by the European Union" width="220"/>
+<img src="./normal-reproduction-low-resolution.jpg" alt="Funded by the European Union" width="220"/>
 
 This project has received funding from the European Union’s Horizon Europe research and innovation programme under the Marie Skłodowska-Curie grant agreement No **101264077** (**STRUCT**). 
 
