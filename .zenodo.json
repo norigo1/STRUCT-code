@@ -1,0 +1,51 @@
+{
+    "title": "Harmonising forest structural metrics from LiDAR and passive optical instruments across scales",
+    "version": "0.1",
+    "description": "The structure of forests changes in response to environmental factors and human intervention
+                    (Calders et al 2020). It also determines the productivity of the forest, with corresponding
+                    impacts on the mass, momentum and gas exchanges with the atmosphere (Beland et al., 2019). 
+                    As such, it is key that measurements of forest structure are accurate and fit-for-purpose to
+                    enable understanding of forest structural changes and their underlying causes, as well as 
+                    provide critical input into policy decisions related to nature-based solutions in the context
+                    of global change. Central to this is a measurement system capable of assessing these structural
+                    metrics at various scales such that each is consistent.
+                    The main aim of this software is to provide tools to assess the ability of multi-sensor approaches to
+                    measure forest structure and determine the consistency between these. This is both in the ability
+                    for a single measurement to be representative and for temporal changes to be discerned.",
+    "creators": [
+        {
+            "name": "Origo, Niall",
+            "affiliation": "Ghent University",
+            "orcid": "0000-0002-8475-6264"
+        },
+        {
+            "name": "Massaro, Simone",
+            "affiliation": "Ghent University",
+            "orcid": "0009-0005-7459-8935"
+        },
+        {
+            "name": "Van den Broeck, Wouter",
+            "affiliation": "Ghent University",
+            "orcid": "0000-0003-2817-9658"
+        },
+        {
+            "name": "Calders, Kim",
+            "affiliation": "Ghent University",
+            "orcid": "0000-0002-4562-2538"
+        }
+    ],    
+    "upload_type": "software",
+    "access_right": "open",
+    "license": "GPL-3.0",
+    "communities": [
+        {
+            "identifier": "ugent"
+        }
+    ],
+    "language": "eng",
+    "keywords": [
+        "Radiative Transfer Modelling",
+        "Forest Structure",
+        "Multi-Sensor Approaches"
+    ]
+}
