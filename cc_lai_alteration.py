@@ -1,6 +1,6 @@
 #######################################################################
 #
-# Code to alter the canopy cover and leaf area index of a scene, 
+# Code to alter the canopy cover and leaf area index of a scene,
 # by changing the scene's vegetation parameters.
 #
 # Written by Niall Origo, 02/10/2026
@@ -9,19 +9,20 @@
 
 """Measure and modify canopy cover and leaf/plant area indices in scenes."""
 
+import os
+import pathlib
+import pdb
+import tempfile
+import time
+from xml.etree import ElementTree as ET
+
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
-from xml.etree import ElementTree as ET
-from scipy.spatial import ConvexHull, Delaunay
 from scipy import interpolate as interp
+from scipy.spatial import ConvexHull, Delaunay
 from shapely.geometry import MultiPoint, Polygon
 from shapely.ops import unary_union
-import pathlib
-import pdb
-import os
-import tempfile
-import time
 
 from geometrical_calculations import polygon_area_3d
 from scene_io import SceneReader
@@ -67,12 +68,14 @@ class GapFraction:
         projected_vertices = vertices - np.outer(distances, normal)
         return projected_vertices
 
-    def calculate_gap_fraction(self, vertices, faces, zenith, azimuth, alpha_radius=0.2):
+    def calculate_gap_fraction(
+        self, vertices, faces, zenith, azimuth, alpha_radius=0.2
+    ):
         """
         Calculate the gap fraction of a vegetation object given its vertices and faces.
         The gap fraction is calculated by projecting the vertices onto a plane defined
         by the zenith and azimuth angles, calculating the crown area using the alpha shape,
-        along with the crown area considering only the reprojected triangles. The latter is 
+        along with the crown area considering only the reprojected triangles. The latter is
         divided by the former to retrieve the gap fraction.
 
         Parameters:
@@ -103,22 +106,26 @@ class GapFraction:
         azimuth_rad = np.radians(azimuth)
 
         # Calculate normal vector from zenith and azimuth angles
-        normal = np.array([
-            np.sin(zenith_rad) * np.cos(azimuth_rad),
-            np.sin(zenith_rad) * np.sin(azimuth_rad),
-            np.cos(zenith_rad)
-        ])
+        normal = np.array(
+            [
+                np.sin(zenith_rad) * np.cos(azimuth_rad),
+                np.sin(zenith_rad) * np.sin(azimuth_rad),
+                np.cos(zenith_rad),
+            ]
+        )
 
         # Reproject vertices onto plane defined by normal vector
-        projected_vertices = self.reproject_vertices(vertices, np.mean(vertices, axis=0), normal)
+        projected_vertices = self.reproject_vertices(
+            vertices, np.mean(vertices, axis=0), normal
+        )
 
         # Calculate alpha shape of projected points
         cc = CanopyCover(self.scene)
 
         # Calculate area of alpha shape and bounding box
-        fg_area = cc.calculate_crown_area_fill_gaps(projected_vertices, 
-                                                    faces, 
-                                                    alpha_radius=alpha_radius)[0]
+        fg_area = cc.calculate_crown_area_fill_gaps(
+            projected_vertices, faces, alpha_radius=alpha_radius
+        )[0]
         wg_area = cc.calculate_crown_area_with_gaps(projected_vertices, faces)[0]
 
         # Calculate gap fraction
@@ -144,9 +151,11 @@ class CanopyCover:
         self.sr = SceneReader(scene)
         self.filepaths = self.sr.read_scene()
 
-    def calculate_canopy_cover(self, directories, globstring, iterable, ga="max_extent"):
+    def calculate_canopy_cover(
+        self, directories, globstring, iterable, ga="max_extent"
+    ):
         """
-        Calculate the canopy cover of the scene by reading in the vertices and faces 
+        Calculate the canopy cover of the scene by reading in the vertices and faces
         of the scene's vegetation objects. Works for wood files where the stem is made
         of facets. Will need a new method if the stem is made of cylinders.
 
@@ -176,10 +185,10 @@ class CanopyCover:
         """
         crown_outlines = []
         for i in iterable:
-            print(f"Processing tree {i/len(iterable)*100:.2f}%...")#, end='\r')
+            print(f"Processing tree {i / len(iterable) * 100:.2f}%...")  # , end='\r')
             for directory in directories:
-                if directory[-1] != '/':
-                    directory += '/'
+                if directory[-1] != "/":
+                    directory += "/"
 
             vertices, faces = self.sr.read_tree(directories, globstring.format(iter=i))
             ca, co = self.calculate_crown_area_fill_gaps(vertices, faces)
@@ -188,12 +197,12 @@ class CanopyCover:
         multipolygon = False
         if len(crown_outlines) > 0:
             canopy_outline = shapely.union_all([Polygon(c) for c in crown_outlines])
-            if canopy_outline.geom_type == 'Polygon':
+            if canopy_outline.geom_type == "Polygon":
                 # area accounting for the holes in the interiror of the canopy
                 ca_total = canopy_outline.area
                 # outline of the whole canopy, ignoring the holes in the interior
                 ol = np.array(canopy_outline.exterior.coords)
-            elif canopy_outline.geom_type == 'MultiPolygon':
+            elif canopy_outline.geom_type == "MultiPolygon":
                 ol = []
                 clump_areas = []
                 for x in canopy_outline.geoms:
@@ -211,14 +220,20 @@ class CanopyCover:
         if ga == "max_extent":
             minx, miny, maxx, maxy = canopy_outline.bounds
             canopy_ga = (maxx - minx) * (maxy - miny)
-            ol = np.array([[minx, miny], 
-                           [minx, maxy], 
-                           [maxx, maxy], 
-                           [maxx, miny], 
-                           [minx, miny], 
-                           [minx, miny]])
+            ol = np.array(
+                [
+                    [minx, miny],
+                    [minx, maxy],
+                    [maxx, maxy],
+                    [maxx, miny],
+                    [minx, miny],
+                    [minx, miny],
+                ]
+            )
         elif multipolygon and ga == "can_outline":
-            print("Warning: Canopy outline is a MultiPolygon. Using convexhull instead.")
+            print(
+                "Warning: Canopy outline is a MultiPolygon. Using convexhull instead."
+            )
             olpg = Polygon(ol).convex_hull
             canopy_ga = olpg.area
             ol = np.array(olpg.exterior.coords)
@@ -229,24 +244,24 @@ class CanopyCover:
         elif ga == "can_outline":
             canopy_ga = Polygon(ol).area
         else:
-            raise ValueError(f"Invalid ground area calculation method: {ga}. "
-                              "Choose from 'max_extent', 'convexhull', or 'can_outline'.")
-        
-        return (ca_total, 
-                canopy_ga, 
-                ca_total / canopy_ga, 
-                crown_outlines, 
-                ol)
+            raise ValueError(
+                f"Invalid ground area calculation method: {ga}. "
+                "Choose from 'max_extent', 'convexhull', or 'can_outline'."
+            )
 
-    def calculate_canopy_cover_with_gaps(self, 
-                                         directories, 
-                                         globstring, 
-                                         iterable, 
-                                         ga="max_extent", 
-                                         alpha_radius=0.2,
-                                         canopy_cover_outline=None):
+        return (ca_total, canopy_ga, ca_total / canopy_ga, crown_outlines, ol)
+
+    def calculate_canopy_cover_with_gaps(
+        self,
+        directories,
+        globstring,
+        iterable,
+        ga="max_extent",
+        alpha_radius=0.2,
+        canopy_cover_outline=None,
+    ):
         """
-        Calculate the canopy cover of the scene by reading in the vertices and faces 
+        Calculate the canopy cover of the scene by reading in the vertices and faces
         of the scene's vegetation objects. Works for wood files where the stem is made
         of facets. Will need a new method if the stem is made of cylinders.
 
@@ -302,9 +317,11 @@ class CanopyCover:
         la = np.linalg.norm(b - c, axis=1)
         lb = np.linalg.norm(a - c, axis=1)
         lc = np.linalg.norm(a - b, axis=1)
-        twice_area = np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
-                            - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
-        with np.errstate(divide='ignore', invalid='ignore'):
+        twice_area = np.abs(
+            (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+            - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
             circumradius = la * lb * lc / (2.0 * twice_area)
         keep = np.isfinite(circumradius) & (circumradius <= alpha_radius)
         triangle_coords = points[tri.simplices[keep]]
@@ -358,15 +375,15 @@ class CanopyCover:
         except Exception:
             return 0.0, np.empty((0, 2))
 
-        polygons = list(shape.geoms) if hasattr(shape, 'geoms') else [shape]
-        polygons = [p for p in polygons if p.geom_type == 'Polygon' and not p.is_empty]
+        polygons = list(shape.geoms) if hasattr(shape, "geoms") else [shape]
+        polygons = [p for p in polygons if p.geom_type == "Polygon" and not p.is_empty]
         if not polygons:
             return 0.0, np.empty((0, 2))
 
         # fill holes: area of the exterior rings only
         crown_area = sum(Polygon(p.exterior).area for p in polygons)
         largest = max(polygons, key=lambda p: Polygon(p.exterior).area)
-        contour = np.asarray(largest.exterior.coords)#[:-1]
+        contour = np.asarray(largest.exterior.coords)  # [:-1]
         return crown_area, contour
 
     def calculate_crown_area_with_gaps(self, vertices, faces):
@@ -388,7 +405,7 @@ class CanopyCover:
                         Union of the projected vegetation faces.
         """
         leaf_polygons = []
-        vertices = np.array(vertices)[:,:2]
+        vertices = np.array(vertices)[:, :2]
         for face in faces:
             v1 = vertices[face[0] - 1]
             v2 = vertices[face[1] - 1]
@@ -465,7 +482,9 @@ class CanopyCover:
             distances = distances[nearest]
             angular_gaps = (angles[candidates] - angles[current]) % (2.0 * np.pi)
             max_distance = np.max(distances)
-            normalized_distances = distances / max_distance if max_distance > 0 else distances
+            normalized_distances = (
+                distances / max_distance if max_distance > 0 else distances
+            )
             scores = 0.25 * angular_gaps / (2.0 * np.pi) + 0.75 * normalized_distances
             next_point = int(candidates[np.argmin(scores)])
             order.append(next_point)
@@ -498,8 +517,10 @@ class CalculateVegAreaIndex:
         self.leaf_id = leaf_id
         self.terrain_id = terrain_id
         self.wood_id = wood_id
-        self.mesh_summary_path = pathlib.Path(scene).resolve().with_name(
-            pathlib.Path(scene).name + ".mesh_summary.npy"
+        self.mesh_summary_path = (
+            pathlib.Path(scene)
+            .resolve()
+            .with_name(pathlib.Path(scene).name + ".mesh_summary.npy")
         )
 
     def _read_mesh_summary(self):
@@ -513,32 +534,52 @@ class CalculateVegAreaIndex:
         if not isinstance(data, np.ndarray):
             data.close()
             raise ValueError(f"Invalid mesh summary format: {self.mesh_summary_path}")
-        fields = ("path", "size", "mtime_ns", "ctime_ns", "has_faces",
-                  "minimum", "maximum", "area")
-        if (data.ndim != 1
+        fields = (
+            "path",
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+            "has_faces",
+            "minimum",
+            "maximum",
+            "area",
+        )
+        if (
+            data.ndim != 1
             or data.dtype.names != fields
             or data.dtype["path"].kind != "U"
-            or any(data.dtype[name] != np.dtype("int64")
-                   for name in ("size", "mtime_ns", "ctime_ns"))
+            or any(
+                data.dtype[name] != np.dtype("int64")
+                for name in ("size", "mtime_ns", "ctime_ns")
+            )
             or data.dtype["has_faces"] != np.dtype("bool")
-            or any(data.dtype[name].subdtype != (np.dtype("float64"), (3,))
-                   for name in ("minimum", "maximum"))
-            or data.dtype["area"] != np.dtype("float64")):
+            or any(
+                data.dtype[name].subdtype != (np.dtype("float64"), (3,))
+                for name in ("minimum", "maximum")
+            )
+            or data.dtype["area"] != np.dtype("float64")
+        ):
             raise ValueError(f"Invalid mesh summary format: {self.mesh_summary_path}")
-        if (len(np.unique(data["path"])) != len(data)
+        if (
+            len(np.unique(data["path"])) != len(data)
             or np.any(data["path"] == "")
             or np.any(data["size"] < 0)
             or not np.isfinite(data["minimum"]).all()
             or not np.isfinite(data["maximum"]).all()
             or np.any(data["minimum"] > data["maximum"])
             or not np.isfinite(data["area"]).all()
-            or np.any(data["area"] < 0)):
+            or np.any(data["area"] < 0)
+        ):
             raise ValueError(f"Invalid mesh summary values: {self.mesh_summary_path}")
         return {
             str(record["path"]): (
-                int(record["size"]), int(record["mtime_ns"]), int(record["ctime_ns"]),
-                bool(record["has_faces"]), record["minimum"].copy(),
-                record["maximum"].copy(), float(record["area"]),
+                int(record["size"]),
+                int(record["mtime_ns"]),
+                int(record["ctime_ns"]),
+                bool(record["has_faces"]),
+                record["minimum"].copy(),
+                record["maximum"].copy(),
+                float(record["area"]),
             )
             for record in data
         }
@@ -546,19 +587,29 @@ class CalculateVegAreaIndex:
     def _write_mesh_summary(self, summary):
         """Atomically save per-mesh extents and total areas beside the scene."""
         width = max((len(path) for path in summary), default=1)
-        dtype = np.dtype([
-            ("path", f"U{width}"), ("size", "i8"), ("mtime_ns", "i8"),
-            ("ctime_ns", "i8"), ("has_faces", "?"), ("minimum", "f8", (3,)),
-            ("maximum", "f8", (3,)), ("area", "f8"),
-        ])
+        dtype = np.dtype(
+            [
+                ("path", f"U{width}"),
+                ("size", "i8"),
+                ("mtime_ns", "i8"),
+                ("ctime_ns", "i8"),
+                ("has_faces", "?"),
+                ("minimum", "f8", (3,)),
+                ("maximum", "f8", (3,)),
+                ("area", "f8"),
+            ]
+        )
         records = np.empty(len(summary), dtype=dtype)
         for index, (path, values) in enumerate(summary.items()):
             records[index] = (path, *values)
         temporary_path = None
         try:
             with tempfile.NamedTemporaryFile(
-                mode="wb", prefix=f".{self.mesh_summary_path.name}.",
-                suffix=".tmp", dir=self.mesh_summary_path.parent, delete=False,
+                mode="wb",
+                prefix=f".{self.mesh_summary_path.name}.",
+                suffix=".tmp",
+                dir=self.mesh_summary_path.parent,
+                delete=False,
             ) as file:
                 temporary_path = pathlib.Path(file.name)
                 np.save(file, records, allow_pickle=False)
@@ -582,13 +633,25 @@ class CalculateVegAreaIndex:
             return vertices, np.empty((0, 3, 3)), np.empty(0)
         triangles = vertices[np.array([face[:3] for face in faces], dtype=int) - 1]
         areas = 0.5 * np.linalg.norm(
-            np.cross(triangles[:, 1] - triangles[:, 0],
-                     triangles[:, 2] - triangles[:, 0]), axis=1,
+            np.cross(
+                triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+            ),
+            axis=1,
         )
         return vertices, triangles, areas
 
-    def calculate_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
-                             type="leaf", *, method="centroid"):
+    def calculate_area_index(
+        self,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        zmin=-np.inf,
+        zmax=np.inf,
+        type="leaf",
+        *,
+        method="centroid",
+    ):
         """
         Calculate vegetation surface area in one or more boxes.
 
@@ -640,21 +703,30 @@ class CalculateVegAreaIndex:
         """
         if method not in ("centroid", "clip"):
             raise ValueError("method must be 'centroid' or 'clip'.")
-        inputs = [np.asarray(value, dtype=float)
-                  for value in (xmin, xmax, ymin, ymax, zmin, zmax)]
+        inputs = [
+            np.asarray(value, dtype=float)
+            for value in (xmin, xmax, ymin, ymax, zmin, zmax)
+        ]
         if any(value.ndim > 1 for value in inputs):
             raise ValueError("Bounds must be scalars or one-dimensional arrays.")
         scalar = all(value.ndim == 0 for value in inputs)
         try:
             bounds = np.broadcast_arrays(*inputs)
         except ValueError as exc:
-            raise ValueError("Bounds arrays must have matching lengths or length one.") from exc
+            raise ValueError(
+                "Bounds arrays must have matching lengths or length one."
+            ) from exc
         bounds = [np.atleast_1d(value) for value in bounds]
         xmin, xmax, ymin, ymax, zmin, zmax = bounds
-        if (not len(xmin) or not all(np.isfinite(value).all() for value in bounds[:4])
-            or np.isnan(zmin).any() or np.isnan(zmax).any()
-            or np.any(xmin >= xmax) or np.any(ymin >= ymax)
-            or np.any(zmin >= zmax)):
+        if (
+            not len(xmin)
+            or not all(np.isfinite(value).all() for value in bounds[:4])
+            or np.isnan(zmin).any()
+            or np.isnan(zmax).any()
+            or np.any(xmin >= xmax)
+            or np.any(ymin >= ymax)
+            or np.any(zmin >= zmax)
+        ):
             raise ValueError(
                 "Bounds must be ordered (xmin < xmax, ymin < ymax, zmin < zmax); "
                 "XY bounds must be finite and Z bounds must not be NaN."
@@ -678,7 +750,9 @@ class CalculateVegAreaIndex:
             suffix = pathlib.Path(filepath).suffix.lower()
             if suffix not in (".obj", ".ply"):
                 raise ValueError(f"Unsupported file format: {filepath}")
-            resolved_filepath = pathlib.Path(reader.resolve_filepath(filepath)).resolve()
+            resolved_filepath = pathlib.Path(
+                reader.resolve_filepath(filepath)
+            ).resolve()
             key = str(resolved_filepath)
             stat = resolved_filepath.stat()
             fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -693,8 +767,14 @@ class CalculateVegAreaIndex:
                 if has_faces:
                     mesh_min, mesh_max = vertices.min(axis=0), vertices.max(axis=0)
                     total = float(np.sum(areas))
-                    if not np.isfinite(mesh_min).all() or not np.isfinite(mesh_max).all() or not np.isfinite(total):
-                        raise ValueError(f"Mesh contains non-finite geometry: {resolved_filepath}")
+                    if (
+                        not np.isfinite(mesh_min).all()
+                        or not np.isfinite(mesh_max).all()
+                        or not np.isfinite(total)
+                    ):
+                        raise ValueError(
+                            f"Mesh contains non-finite geometry: {resolved_filepath}"
+                        )
                 else:
                     mesh_min = mesh_max = np.zeros(3)
                     total = 0.0
@@ -707,7 +787,9 @@ class CalculateVegAreaIndex:
             overlaps = np.all((mesh_max >= lows) & (mesh_min < highs), axis=1)
             if not np.any(overlaps):
                 continue
-            fully_contained = overlaps & np.all((mesh_min >= lows) & (mesh_max < highs), axis=1)
+            fully_contained = overlaps & np.all(
+                (mesh_min >= lows) & (mesh_max < highs), axis=1
+            )
             mesh_area = np.zeros(nboxes)
             mesh_area[fully_contained] = total
             partial = overlaps & ~fully_contained
@@ -728,10 +810,14 @@ class CalculateVegAreaIndex:
                     mesh_area[index] = np.sum(areas[selected])
                 else:
                     candidates = np.all((face_max >= low) & (face_min < high), axis=1)
-                    contained = candidates & np.all((face_min >= low) & (face_max <= high), axis=1)
+                    contained = candidates & np.all(
+                        (face_min >= low) & (face_max <= high), axis=1
+                    )
                     mesh_area[index] = np.sum(areas[contained])
                     for triangle in triangles[candidates & ~contained]:
-                        mesh_area[index] += self._clipped_triangle_area(triangle, low, high)
+                        mesh_area[index] += self._clipped_triangle_area(
+                            triangle, low, high
+                        )
             per_mesh.append(mesh_area)
 
         if summary_changed:
@@ -755,11 +841,17 @@ class CalculateVegAreaIndex:
                     return 0.0
                 clipped = []
                 previous = polygon[-1]
-                previous_inside = previous[axis] >= bound if lower else previous[axis] <= bound
+                previous_inside = (
+                    previous[axis] >= bound if lower else previous[axis] <= bound
+                )
                 for current in polygon:
-                    current_inside = current[axis] >= bound if lower else current[axis] <= bound
+                    current_inside = (
+                        current[axis] >= bound if lower else current[axis] <= bound
+                    )
                     if current_inside != previous_inside:
-                        fraction = (bound - previous[axis]) / (current[axis] - previous[axis])
+                        fraction = (bound - previous[axis]) / (
+                            current[axis] - previous[axis]
+                        )
                         clipped.append(previous + fraction * (current - previous))
                     if current_inside:
                         clipped.append(current)
@@ -771,8 +863,9 @@ class CalculateVegAreaIndex:
         edges = polygon[1:] - polygon[0]
         return float(0.5 * np.linalg.norm(np.cross(edges[:-1], edges[1:]).sum(axis=0)))
 
-    def calculate_leaf_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
-                                  *, method="centroid"):
+    def calculate_leaf_area_index(
+        self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf, *, method="centroid"
+    ):
         """
         Calculate the leaf area index (LAI) of the scene.
 
@@ -799,8 +892,9 @@ class CalculateVegAreaIndex:
         )
         return total_leaf_area, ground_area, leaf_area
 
-    def calculate_plant_area_index(self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf,
-                                   *, method="centroid"):
+    def calculate_plant_area_index(
+        self, xmin, xmax, ymin, ymax, zmin=-np.inf, zmax=np.inf, *, method="centroid"
+    ):
         """
         Calculate the plant area index (PAI) of the scene.
 
@@ -836,7 +930,13 @@ class CalculateVegAreaIndex:
         return total_plant_area, ground_area, np.array(plant_area)
 
     def calculate_leaf_area_index_profile(
-        self, xmin, xmax, ymin, ymax, min_height=0.0, height_bins=10,
+        self,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        min_height=0.0,
+        height_bins=10,
         height_range=None,
     ):
         """
@@ -862,12 +962,24 @@ class CalculateVegAreaIndex:
                   contribution of each band. Contributions sum to the scene LAI.
         """
         return self.calculate_area_index_profile(
-            xmin, xmax, ymin, ymax, min_height=min_height,
-            type="leaf", height_bins=height_bins, height_range=height_range,
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            min_height=min_height,
+            type="leaf",
+            height_bins=height_bins,
+            height_range=height_range,
         )
 
     def calculate_plant_area_index_profile(
-        self, xmin, xmax, ymin, ymax, min_height=0.0, height_bins=10,
+        self,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        min_height=0.0,
+        height_bins=10,
         height_range=None,
     ):
         """
@@ -893,12 +1005,25 @@ class CalculateVegAreaIndex:
                   contribution of each band. Contributions sum to the scene PAI.
         """
         return self.calculate_area_index_profile(
-            xmin, xmax, ymin, ymax, min_height=min_height,
-            type="plant", height_bins=height_bins, height_range=height_range,
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            min_height=min_height,
+            type="plant",
+            height_bins=height_bins,
+            height_range=height_range,
         )
 
     def calculate_area_index_profile(
-        self, xmin, xmax, ymin, ymax, min_height=0.0, type="leaf", height_bins=10,
+        self,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        min_height=0.0,
+        type="leaf",
+        height_bins=10,
         height_range=None,
     ):
         """
@@ -981,8 +1106,10 @@ class CalculateVegAreaIndex:
             if not len(vertices) or not len(faces):
                 continue
             if (
-                np.min(vertices[:, 0]) < xmin or np.max(vertices[:, 0]) > xmax
-                or np.min(vertices[:, 1]) < ymin or np.max(vertices[:, 1]) > ymax
+                np.min(vertices[:, 0]) < xmin
+                or np.max(vertices[:, 0]) > xmax
+                or np.min(vertices[:, 1]) < ymin
+                or np.max(vertices[:, 1]) > ymax
             ):
                 continue
 
@@ -1028,9 +1155,7 @@ class CalculateVegAreaIndex:
                 )
         band_indices = np.searchsorted(edges, heights, side="right") - 1
         band_indices = np.clip(band_indices, 0, height_bins - 1)
-        area_by_band = np.bincount(
-            band_indices, weights=areas, minlength=height_bins
-        )
+        area_by_band = np.bincount(band_indices, weights=areas, minlength=height_bins)
         band_centers = (edges[:-1] + edges[1:]) / 2
         return np.column_stack((band_centers, area_by_band / ground_area))
 
@@ -1073,9 +1198,9 @@ class CanopyCoverSpatial:
         self.union = cc.union
         mean_xyz = []
         for filepath in self.filepaths:
-            if filepath.endswith('.obj'):
+            if filepath.endswith(".obj"):
                 vertices, _ = sr.read_obj(filepath)
-            elif filepath.endswith('.ply'):
+            elif filepath.endswith(".ply"):
                 vertices, _ = sr.read_ply(filepath)
             else:
                 raise ValueError(f"Unsupported file format: {filepath}")
@@ -1092,10 +1217,15 @@ class CanopyCoverSpatial:
         None
             Displays the plot with Matplotlib.
         """
-        plt.scatter(self.locations[:, 0], self.locations[:, 1], s=(self.xy_area/np.pi)**0.5, alpha=0.5)
-        plt.xlabel('X Coordinate')
-        plt.ylabel('Y Coordinate')
-        plt.title('Canopy Cover Spatial Distribution')
+        plt.scatter(
+            self.locations[:, 0],
+            self.locations[:, 1],
+            s=(self.xy_area / np.pi) ** 0.5,
+            alpha=0.5,
+        )
+        plt.xlabel("X Coordinate")
+        plt.ylabel("Y Coordinate")
+        plt.title("Canopy Cover Spatial Distribution")
         plt.show()
 
     def plot_canopy_union(self):
@@ -1113,10 +1243,10 @@ class CanopyCoverSpatial:
         fig, ax = plt.subplots()
         for crown_clust in self.cluster_points:
             crown_clust = np.array(crown_clust)
-            ax.fill(crown_clust[:,0], crown_clust[:,1], c="g")
-        ax.set_aspect('equal')
-        ax.set_xlabel('X Coordinate')
-        ax.set_ylabel('Y Coordinate')
+            ax.fill(crown_clust[:, 0], crown_clust[:, 1], c="g")
+        ax.set_aspect("equal")
+        ax.set_xlabel("X Coordinate")
+        ax.set_ylabel("Y Coordinate")
         plt.show()
 
     def plot_crown_size_distribution(self):
@@ -1131,10 +1261,10 @@ class CanopyCoverSpatial:
         """
         ranked = np.sort(self.xy_area)
         order = np.arange(1, len(ranked) + 1)
-        plt.plot(order, ranked, marker='o', markersize=3)
-        plt.xlabel('Crown Rank (smallest to largest)')
-        plt.ylabel('Crown Area')
-        plt.title('Crown Size Profile')
+        plt.plot(order, ranked, marker="o", markersize=3)
+        plt.xlabel("Crown Rank (smallest to largest)")
+        plt.ylabel("Crown Area")
+        plt.title("Crown Size Profile")
         plt.show()
 
 
@@ -1142,7 +1272,15 @@ class CanopyCoverSpatial:
 class CanopyCoverNewScene:
     """Create a scene with a lower canopy cover by retaining a tree subset."""
 
-    def __init__(self, scene, new_cc, orig_cc=None, leaf_id="leaves", terrain_id="terrain", wood_id="wood"):
+    def __init__(
+        self,
+        scene,
+        new_cc,
+        orig_cc=None,
+        leaf_id="leaves",
+        terrain_id="terrain",
+        wood_id="wood",
+    ):
         """
         Class to create a new scene with a reduced canopy cover compared to
         the original scene. The new canopy cover is specified by the user.
@@ -1160,7 +1298,7 @@ class CanopyCoverNewScene:
         terrain_id: str, optional
                     String identifier for the terrain objects in the scene.
         wood_id:    str, optional
-                    String identifier for the wood objects in the scene. 
+                    String identifier for the wood objects in the scene.
 
         Returns:
         --------
@@ -1179,10 +1317,14 @@ class CanopyCoverNewScene:
         cc = CanopyCover(scene)
         self.ccs = CanopyCoverSpatial(scene)
         if orig_cc is None:
-            self.total_area, self.ground_area, self.xy_area, self.cluster_points = cc.calculate_canopy_cover(directories=can_dirs, 
-                                                                                                             globstring="*_{iter}_*", 
-                                                                                                             iterable=range(len(leaf_dir)),
-                                                                                                             ga="can_outline")
+            self.total_area, self.ground_area, self.xy_area, self.cluster_points = (
+                cc.calculate_canopy_cover(
+                    directories=can_dirs,
+                    globstring="*_{iter}_*",
+                    iterable=range(len(leaf_dir)),
+                    ga="can_outline",
+                )
+            )
             self.orig_cc = self.total_area / self.ground_area
         self.leaf_id = leaf_id
         self.terrain_id = terrain_id
@@ -1234,11 +1376,15 @@ class CanopyCoverNewScene:
 
             # pick the number based on the weights and then determine whether you want the
             # one there or above
-            pick = np.random.choice(order[new_bool.astype(bool)][:-1], p=nweights) + np.random.randint(0, 2)
-            new_bool[order==pick] = 0
-            nranked_int = interp.interp1d(order[new_bool.astype(bool)], 
-                                          ranked[new_bool.astype(bool)],
-                                          fill_value="extrapolate")
+            pick = np.random.choice(
+                order[new_bool.astype(bool)][:-1], p=nweights
+            ) + np.random.randint(0, 2)
+            new_bool[order == pick] = 0
+            nranked_int = interp.interp1d(
+                order[new_bool.astype(bool)],
+                ranked[new_bool.astype(bool)],
+                fill_value="extrapolate",
+            )
             new_ranked = nranked_int(order)
 
             new_cc_area = np.sum(new_ranked[new_bool.astype(bool)])
@@ -1281,26 +1427,35 @@ class CanopyCoverNewScene:
         scene_path : str
                      Path to the generated scene XML.
         """
-        new_scene_path = self.scene.replace('.xml', f'_cc{self.new_cc*100:.2f}.xml')
+        new_scene_path = self.scene.replace(".xml", f"_cc{self.new_cc * 100:.2f}.xml")
         matching_stems = self.get_matching_stems(new_filepaths)
-        new_scene = ET.Element('scene')
-        obj_elem = ET.SubElement(new_scene, 'object')
-        filepath_elem = ET.SubElement(obj_elem, 'filepath')
+        new_scene = ET.Element("scene")
+        obj_elem = ET.SubElement(new_scene, "object")
+        filepath_elem = ET.SubElement(obj_elem, "filepath")
         filepath_elem.text = self.terrain_id  # Add terrain object to the new scene
         for filepath in new_filepaths + matching_stems:
-            obj_elem = ET.SubElement(new_scene, 'object')
-            filepath_elem = ET.SubElement(obj_elem, 'filepath')
+            obj_elem = ET.SubElement(new_scene, "object")
+            filepath_elem = ET.SubElement(obj_elem, "filepath")
             filepath_elem.text = filepath
 
         tree = ET.ElementTree(new_scene)
-        tree.write(new_scene_path, encoding='utf-8', xml_declaration=True)
+        tree.write(new_scene_path, encoding="utf-8", xml_declaration=True)
+
 
 # class to remove leaves from trees in a scene and create a new scene
 class LeafAreaIndexNewScene:
     """Create a scene with a target LAI by reducing whole leaf components."""
 
-    def __init__(self, scene, new_lai, orig_lai=None, leaf_id="leaves", terrain_id="terrain", wood_id="wood",
-                 height_bins=10):
+    def __init__(
+        self,
+        scene,
+        new_lai,
+        orig_lai=None,
+        leaf_id="leaves",
+        terrain_id="terrain",
+        wood_id="wood",
+        height_bins=10,
+    ):
         """
         Create a scene with a reduced LAI by thinning leaf faces uniformly.
 
@@ -1338,11 +1493,15 @@ class LeafAreaIndexNewScene:
             raise ValueError("height_bins must be a positive integer.")
         self.height_bins = height_bins
         self.leaf_filepaths = [
-            filepath for filepath in self.filepaths
-            if leaf_id in filepath and pathlib.Path(filepath).suffix.lower() in {".ply", ".obj"}
+            filepath
+            for filepath in self.filepaths
+            if leaf_id in filepath
+            and pathlib.Path(filepath).suffix.lower() in {".ply", ".obj"}
         ]
         if not self.leaf_filepaths:
-            raise ValueError(f"No leaf mesh files containing '{leaf_id}' were found in the scene.")
+            raise ValueError(
+                f"No leaf mesh files containing '{leaf_id}' were found in the scene."
+            )
 
         # Use the helper's per-object LAI and PAI routines to establish the common
         # scene bounds, so every tree is measured against the same ground area.
@@ -1375,7 +1534,9 @@ class LeafAreaIndexNewScene:
         if self.new_lai > self.orig_lai:
             raise ValueError("new_lai cannot be greater than orig_lai.")
         if self.total_leaf_area <= 0 and self.new_lai > 0:
-            raise ValueError("Cannot create a positive LAI from a scene with no leaf area.")
+            raise ValueError(
+                "Cannot create a positive LAI from a scene with no leaf area."
+            )
         if self.orig_lai == 0:
             self.retained_fraction = 0.0
         else:
@@ -1430,10 +1591,14 @@ class LeafAreaIndexNewScene:
         edge_faces = {}
         for face_index, face in enumerate(faces):
             for edge_index in range(3):
-                edge = tuple(sorted((
-                    int(face[edge_index]),
-                    int(face[(edge_index + 1) % 3]),
-                )))
+                edge = tuple(
+                    sorted(
+                        (
+                            int(face[edge_index]),
+                            int(face[(edge_index + 1) % 3]),
+                        )
+                    )
+                )
                 edge_faces.setdefault(edge, []).append(face_index)
 
         for adjacent_faces in edge_faces.values():
@@ -1443,10 +1608,7 @@ class LeafAreaIndexNewScene:
         components = {}
         for face_index in range(len(faces)):
             components.setdefault(find(face_index), []).append(face_index)
-        return [
-            np.asarray(component, dtype=int)
-            for component in components.values()
-        ]
+        return [np.asarray(component, dtype=int) for component in components.values()]
 
     def _select_faces(self, vertices, faces):
         """
@@ -1471,22 +1633,26 @@ class LeafAreaIndexNewScene:
             axis=1,
         )
         face_heights = np.mean(face_vertices[:, :, 2], axis=1)
-        leaf_heights = np.asarray([
-            np.average(face_heights[component], weights=face_areas[component])
-            if np.sum(face_areas[component]) > 0
-            else np.mean(face_heights[component])
-            for component in components
-        ])
-        leaf_areas = np.asarray([
-            np.sum(face_areas[component]) for component in components
-        ])
+        leaf_heights = np.asarray(
+            [
+                np.average(face_heights[component], weights=face_areas[component])
+                if np.sum(face_areas[component]) > 0
+                else np.mean(face_heights[component])
+                for component in components
+            ]
+        )
+        leaf_areas = np.asarray(
+            [np.sum(face_areas[component]) for component in components]
+        )
         min_height = float(np.min(leaf_heights))
         height_range = float(np.max(leaf_heights) - min_height)
         if height_range == 0:
             band_ids = np.zeros(len(components), dtype=int)
         else:
             band_ids = np.minimum(
-                ((leaf_heights - min_height) / height_range * self.height_bins).astype(int),
+                ((leaf_heights - min_height) / height_range * self.height_bins).astype(
+                    int
+                ),
                 self.height_bins - 1,
             )
 
@@ -1523,7 +1689,8 @@ class LeafAreaIndexNewScene:
                     for phase in np.arange(phase_count) / phase_count:
                         positions = np.floor(
                             (np.arange(keep_count) + phase)
-                            * len(band_leaves) / keep_count
+                            * len(band_leaves)
+                            / keep_count
                         ).astype(int)
                         candidates.append(band_leaves[positions])
                 for candidate_leaves in candidates:
@@ -1551,7 +1718,9 @@ class LeafAreaIndexNewScene:
         if not format_line.startswith("format ascii "):
             raise ValueError(f"Only ASCII PLY files can be reduced: {source_path}")
         try:
-            end_header = next(i for i, line in enumerate(lines) if line.strip() == "end_header")
+            end_header = next(
+                i for i, line in enumerate(lines) if line.strip() == "end_header"
+            )
         except StopIteration as exc:
             raise ValueError(f"PLY file has no end_header: {source_path}") from exc
 
@@ -1568,7 +1737,9 @@ class LeafAreaIndexNewScene:
         if face_count is None:
             raise ValueError(f"PLY file has no face element: {source_path}")
         if face_count != len(faces):
-            raise ValueError(f"PLY face records do not match parsed faces: {source_path}")
+            raise ValueError(
+                f"PLY face records do not match parsed faces: {source_path}"
+            )
 
         kept_face_ids = np.asarray(kept_face_ids, dtype=int)
         used_vertex_ids = (
@@ -1576,26 +1747,32 @@ class LeafAreaIndexNewScene:
             if len(kept_face_ids)
             else np.empty(0, dtype=int)
         )
-        vertex_element_count = next(count for name, count in elements if name == "vertex")
+        vertex_element_count = next(
+            count for name, count in elements if name == "vertex"
+        )
         vertex_remap = np.full(vertex_element_count, -1, dtype=int)
         vertex_remap[used_vertex_ids] = np.arange(len(used_vertex_ids))
 
         updated_header = list(lines[:end_header])
         vertex_element_index = next(
-            i for i, line in enumerate(updated_header)
+            i
+            for i, line in enumerate(updated_header)
             if line.split()[:2] == ["element", "vertex"]
         )
-        updated_header[vertex_element_index] = f"element vertex {len(used_vertex_ids)}\n"
+        updated_header[vertex_element_index] = (
+            f"element vertex {len(used_vertex_ids)}\n"
+        )
         face_element_index = next(
-            i for i, line in enumerate(updated_header)
+            i
+            for i, line in enumerate(updated_header)
             if line.split()[:2] == ["element", "face"]
         )
         updated_header[face_element_index] = f"element face {len(kept_face_ids)}\n"
-        body = lines[end_header + 1:]
+        body = lines[end_header + 1 :]
         output_body = []
         offset = 0
         for element_name, count in elements:
-            records = body[offset:offset + count]
+            records = body[offset : offset + count]
             if len(records) != count:
                 raise ValueError(f"PLY element records are incomplete: {source_path}")
             if element_name == "vertex":
@@ -1604,20 +1781,25 @@ class LeafAreaIndexNewScene:
                 for face_id in kept_face_ids:
                     fields = records[int(face_id)].split()
                     vertex_count = int(fields[0])
-                    old_indices = np.asarray(fields[1:vertex_count + 1], dtype=int)
+                    old_indices = np.asarray(fields[1 : vertex_count + 1], dtype=int)
                     new_indices = vertex_remap[old_indices]
                     if np.any(new_indices < 0):
                         raise ValueError(
                             f"PLY face references a removed vertex: {source_path}"
                         )
-                    remapped = [str(vertex_count), *(str(index) for index in new_indices)]
-                    remapped.extend(fields[vertex_count + 1:])
+                    remapped = [
+                        str(vertex_count),
+                        *(str(index) for index in new_indices),
+                    ]
+                    remapped.extend(fields[vertex_count + 1 :])
                     output_body.append(" ".join(remapped) + "\n")
             else:
                 output_body.extend(records)
             offset += count
         if offset != len(body):
-            raise ValueError(f"Unexpected data after PLY element records: {source_path}")
+            raise ValueError(
+                f"Unexpected data after PLY element records: {source_path}"
+            )
 
         with open(output_path, "w", encoding="utf-8") as output:
             output.writelines(updated_header)
@@ -1668,9 +1850,7 @@ class LeafAreaIndexNewScene:
             source_path = pathlib.Path(self.sr.resolve_filepath(filepath))
             output_path = source_path.with_name(source_path.stem + suffix)
             if source_path.suffix.lower() == ".ply":
-                self._write_ascii_ply(
-                    source_path, output_path, faces, kept_face_ids
-                )
+                self._write_ascii_ply(source_path, output_path, faces, kept_face_ids)
             else:
                 self._write_obj_as_ply(output_path, vertices, faces, kept_face_ids)
             generated_paths.append(str(output_path))
@@ -1741,7 +1921,10 @@ class LeafAreaIndexNewScene:
         replacements = dict(zip(self.leaf_filepaths, new_filepaths))
         xml_tree = ET.parse(self.scene)
         for element in xml_tree.iter("param"):
-            if element.get("key") == "filepath" and element.get("value") in replacements:
+            if (
+                element.get("key") == "filepath"
+                and element.get("value") in replacements
+            ):
                 element.set("value", replacements[element.get("value")])
 
         scene_path = pathlib.Path(self.scene)

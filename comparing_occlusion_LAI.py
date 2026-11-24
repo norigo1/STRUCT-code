@@ -80,7 +80,9 @@ class HeliosSimulationData:
                 if not fields or fields[0].startswith("#"):
                     continue
                 if len(fields) < 11:
-                    raise ValueError(f"Malformed waveform record at {self.waveform_path}:{line_number}.")
+                    raise ValueError(
+                        f"Malformed waveform record at {self.waveform_path}:{line_number}."
+                    )
                 try:
                     yield {
                         "fullwave_index": int(fields[0]),
@@ -119,22 +121,32 @@ class HeliosSimulationData:
         ValueError
             If the point, waveform metadata, or packet is invalid or missing.
         """
-        if not isinstance(point_index, (int, np.integer)) or not 0 <= point_index < len(self.las.points):
+        if not isinstance(point_index, (int, np.integer)) or not 0 <= point_index < len(
+            self.las.points
+        ):
             raise ValueError("point_index must identify a LAS point.")
         if self.las.header.point_format.id not in (4, 5, 9, 10):
-            raise ValueError("The LAS point format has no embedded waveform packet fields.")
+            raise ValueError(
+                "The LAS point format has no embedded waveform packet fields."
+            )
         descriptor_index = int(self.las.wavepacket_index[point_index])
         if descriptor_index == 0:
             raise ValueError("The selected point has no waveform packet.")
         descriptors = [
-            vlr for vlr in self.las.header.vlrs
+            vlr
+            for vlr in self.las.header.vlrs
             if vlr.user_id == "LASF_Spec" and vlr.record_id == descriptor_index + 99
         ]
         if len(descriptors) != 1 or not hasattr(descriptors[0], "parsed_record"):
             raise ValueError("The waveform packet descriptor is missing or invalid.")
         encoding = self.las.header.global_encoding
-        if encoding.waveform_data_packets_internal == encoding.waveform_data_packets_external:
-            raise ValueError("Exactly one internal or external waveform storage flag must be set.")
+        if (
+            encoding.waveform_data_packets_internal
+            == encoding.waveform_data_packets_external
+        ):
+            raise ValueError(
+                "Exactly one internal or external waveform storage flag must be set."
+            )
         offset = int(self.las.wavepacket_offset[point_index])
         size = int(self.las.wavepacket_size[point_index])
         if offset < 60 or size <= 0:
@@ -143,7 +155,9 @@ class HeliosSimulationData:
             packet_path = self.las_path
             record_start = int(self.las.header.start_of_waveform_data_packet_record)
             if record_start <= 0:
-                raise ValueError("The LAS internal waveform record location is missing.")
+                raise ValueError(
+                    "The LAS internal waveform record location is missing."
+                )
         else:
             packet_path = self.las_path.with_suffix(".wdp")
             record_start = 0
@@ -151,12 +165,18 @@ class HeliosSimulationData:
             file.seek(record_start)
             header = file.read(60)
             if len(header) != 60:
-                raise ValueError(f"Truncated waveform data record header in {packet_path}.")
+                raise ValueError(
+                    f"Truncated waveform data record header in {packet_path}."
+                )
             _, user_id, record_id, length, _ = struct.unpack("<H16sHQ32s", header)
             if user_id.rstrip(b"\0") != b"LASF_Spec" or record_id != 65535:
-                raise ValueError(f"Invalid waveform data record header in {packet_path}.")
+                raise ValueError(
+                    f"Invalid waveform data record header in {packet_path}."
+                )
             if offset - 60 + size > length:
-                raise ValueError(f"Waveform packet extends beyond the record in {packet_path}.")
+                raise ValueError(
+                    f"Waveform packet extends beyond the record in {packet_path}."
+                )
             file.seek(record_start + offset)
             packet = file.read(size)
         if len(packet) != size:
@@ -316,15 +336,9 @@ class OccpyAnalysis:
                  JSON-encoded configuration containing the output directory.
         """
         oconfig = json.loads(config)
-        self.Nhit_norm = np.load(
-            oconfig["out_dir"] + "merged_voxgrids/Nhit_norm.npy"
-        )
-        self.Nmiss_norm = np.load(
-            oconfig["out_dir"] + "merged_voxgrids/Nmiss_norm.npy"
-        )
-        self.Nocc_norm = np.load(
-            oconfig["out_dir"] + "merged_voxgrids/Nocc_norm.npy"
-        )
+        self.Nhit_norm = np.load(oconfig["out_dir"] + "merged_voxgrids/Nhit_norm.npy")
+        self.Nmiss_norm = np.load(oconfig["out_dir"] + "merged_voxgrids/Nmiss_norm.npy")
+        self.Nocc_norm = np.load(oconfig["out_dir"] + "merged_voxgrids/Nocc_norm.npy")
         self.Classification_norm = np.load(
             oconfig["out_dir"] + "merged_voxgrids/Classification_norm.npy"
         )
@@ -457,9 +471,19 @@ class PointCloudVegetationAnalysis:
     prepared for PAVD. Other real-data formats and platforms remain hooks.
     """
 
-    def __init__(self, point_cloud_path, source, platform, *, pulse_path=None,
-                 waveform_path=None, ground_elevation=None, calders_settings=None,
-                 zenith_range=(35.0, 70.0), azimuth_range=(0.0, 360.0)):
+    def __init__(
+        self,
+        point_cloud_path,
+        source,
+        platform,
+        *,
+        pulse_path=None,
+        waveform_path=None,
+        ground_elevation=None,
+        calders_settings=None,
+        zenith_range=(35.0, 70.0),
+        azimuth_range=(0.0, 360.0),
+    ):
         """
         Configure a point-cloud analysis without loading or processing data.
 
@@ -500,14 +524,21 @@ class PointCloudVegetationAnalysis:
         self.source = source
         self.platform = platform
         self.pulse_path = Path(pulse_path).resolve() if pulse_path is not None else None
-        self.waveform_path = Path(waveform_path).resolve() if waveform_path is not None else None
+        self.waveform_path = (
+            Path(waveform_path).resolve() if waveform_path is not None else None
+        )
         self.ground_elevation = ground_elevation
         if calders_settings is not None and (
-            not isinstance(calders_settings, CaldersProfileInput) or calders_settings.scans
+            not isinstance(calders_settings, CaldersProfileInput)
+            or calders_settings.scans
         ):
-            raise ValueError("calders_settings must be a CaldersProfileInput with no scans.")
+            raise ValueError(
+                "calders_settings must be a CaldersProfileInput with no scans."
+            )
         self.calders_settings = (
-            calders_settings if calders_settings is not None else CaldersProfileInput(scans=())
+            calders_settings
+            if calders_settings is not None
+            else CaldersProfileInput(scans=())
         )
         self.zenith_range = zenith_range
         self.azimuth_range = azimuth_range
@@ -587,16 +618,30 @@ class PointCloudVegetationAnalysis:
                 pass
         pulses = None
         if self.pulse_path is not None:
-            pulse_dtype = np.dtype([
-                ("origin_x", "f8"), ("origin_y", "f8"), ("origin_z", "f8"),
-                ("direction_x", "f8"), ("direction_y", "f8"), ("direction_z", "f8"),
-                ("gps_time", object), ("pulse_index", "i8"), ("device_index", "i8"),
-            ])
+            pulse_dtype = np.dtype(
+                [
+                    ("origin_x", "f8"),
+                    ("origin_y", "f8"),
+                    ("origin_z", "f8"),
+                    ("direction_x", "f8"),
+                    ("direction_y", "f8"),
+                    ("direction_z", "f8"),
+                    ("gps_time", object),
+                    ("pulse_index", "i8"),
+                    ("device_index", "i8"),
+                ]
+            )
             pulses = np.loadtxt(self.pulse_path, dtype=pulse_dtype, ndmin=1)
             if not all(
                 np.isfinite(pulses[column]).all()
-                for column in ("origin_x", "origin_y", "origin_z",
-                               "direction_x", "direction_y", "direction_z")
+                for column in (
+                    "origin_x",
+                    "origin_y",
+                    "origin_z",
+                    "direction_x",
+                    "direction_y",
+                    "direction_z",
+                )
             ):
                 raise ValueError("Pulse positions and directions must be finite.")
         # Do not eagerly load potentially huge waveform EVLRs into memory.
@@ -631,7 +676,9 @@ class PointCloudVegetationAnalysis:
         if path.suffix.lower() in (".h5", ".hdf5"):
             return self._load_hdf5_scan(path)
         if path.suffix.lower() != ".rxp":
-            raise NotImplementedError("Real point-cloud loading supports HDF5 and RIEGL RXP files only.")
+            raise NotImplementedError(
+                "Real point-cloud loading supports HDF5 and RIEGL RXP files only."
+            )
         if not path.is_file():
             raise FileNotFoundError(f"RIEGL RXP file not found: {path}")
         try:
@@ -650,19 +697,31 @@ class PointCloudVegetationAnalysis:
         import h5py
 
         if self.pulse_path is not None or self.waveform_path is not None:
-            raise ValueError("pulse_path and waveform_path are not used with HDF5 input.")
+            raise ValueError(
+                "pulse_path and waveform_path are not used with HDF5 input."
+            )
         fields = {
             "pulses": {
-                "pulse_id": ("u", 8), "timestamp": ("f", 8),
-                "origin_x": ("f", 8), "origin_y": ("f", 8), "origin_z": ("f", 8),
-                "dir_x": ("f", 4), "dir_y": ("f", 4), "dir_z": ("f", 4),
+                "pulse_id": ("u", 8),
+                "timestamp": ("f", 8),
+                "origin_x": ("f", 8),
+                "origin_y": ("f", 8),
+                "origin_z": ("f", 8),
+                "dir_x": ("f", 4),
+                "dir_y": ("f", 4),
+                "dir_z": ("f", 4),
                 "return_count": ("u", 1),
             },
             "returns": {
-                "pulse_id": ("u", 8), "return_num": ("u", 1),
-                "x": ("f", 8), "y": ("f", 8), "z": ("f", 8),
-                "range": ("f", 4), "reflectance": ("f", 4),
-                "amplitude": ("f", 4), "deviation": ("u", 2),
+                "pulse_id": ("u", 8),
+                "return_num": ("u", 1),
+                "x": ("f", 8),
+                "y": ("f", 8),
+                "z": ("f", 8),
+                "range": ("f", 4),
+                "reflectance": ("f", 4),
+                "amplitude": ("f", 4),
+                "deviation": ("u", 2),
             },
         }
         with h5py.File(path, "r") as file:
@@ -672,13 +731,17 @@ class PointCloudVegetationAnalysis:
                     raise ValueError(f"HDF5 must contain a '{name}' dataset.")
                 dataset = file[name]
                 if dataset.ndim != 1 or dataset.dtype.names is None:
-                    raise ValueError(f"HDF5 '{name}' must be a one-dimensional compound dataset.")
+                    raise ValueError(
+                        f"HDF5 '{name}' must be a one-dimensional compound dataset."
+                    )
                 for field, (kind, size) in required.items():
                     if field not in dataset.dtype.names:
                         raise ValueError(f"HDF5 '{name}' is missing field '{field}'.")
                     dtype = dataset.dtype.fields[field][0]
                     if dtype.kind != kind or dtype.itemsize != size or dtype.shape:
-                        raise ValueError(f"HDF5 '{name}.{field}' must be a scalar {kind}{size} field.")
+                        raise ValueError(
+                            f"HDF5 '{name}.{field}' must be a scalar {kind}{size} field."
+                        )
                 tables[name] = dataset[:]
             metadata = dict(file.attrs.items())
         return HDF5ScanData(tables["pulses"], tables["returns"], metadata)
@@ -764,16 +827,22 @@ class PointCloudVegetationAnalysis:
             raise TypeError("Ground preparation requires HeliosSimulationData.")
         pulses = point_cloud.pulses
         if pulses is None or len(pulses) == 0:
-            raise ValueError("A non-empty HELIOS++ pulse file including no-return pulses is required.")
+            raise ValueError(
+                "A non-empty HELIOS++ pulse file including no-return pulses is required."
+            )
         if np.unique(pulses["device_index"]).size != 1:
-            raise ValueError("Multiple scanner devices cannot be associated unambiguously with LAS returns.")
+            raise ValueError(
+                "Multiple scanner devices cannot be associated unambiguously with LAS returns."
+            )
         origins = np.column_stack([pulses[f"origin_{axis}"] for axis in "xyz"])
         directions = np.column_stack([pulses[f"direction_{axis}"] for axis in "xyz"])
         if not np.isfinite(origins).all() or not np.isfinite(directions).all():
             raise ValueError("Pulse origins and directions must be finite.")
         # HELIOS++ writes coordinates to four decimal places.
         if np.any(np.ptp(origins, axis=0) > 0.00010001):
-            raise ValueError("Calders ground preparation requires a single scanner position.")
+            raise ValueError(
+                "Calders ground preparation requires a single scanner position."
+            )
         lengths = np.linalg.norm(directions, axis=1)
         if np.any(lengths == 0) or not np.isfinite(lengths).all():
             raise ValueError("Pulse directions must be finite and non-zero.")
@@ -782,18 +851,26 @@ class PointCloudVegetationAnalysis:
 
         las = point_cloud.las
         if "fullwaveIndex" not in list(las.point_format.extra_dimension_names):
-            raise ValueError("HELIOS++ LAS must contain the fullwaveIndex extra dimension.")
+            raise ValueError(
+                "HELIOS++ LAS must contain the fullwaveIndex extra dimension."
+            )
         pulse_ids = pulses["pulse_index"]
         order = np.argsort(pulse_ids)
         sorted_ids = pulse_ids[order]
         if np.any(sorted_ids < 0) or np.any(np.diff(sorted_ids) == 0):
             raise ValueError("Pulse indices must be unique and non-negative.")
         return_ids = np.asarray(las["fullwaveIndex"])
-        if (not np.issubdtype(return_ids.dtype, np.integer)
+        if (
+            not np.issubdtype(return_ids.dtype, np.integer)
             or np.any(return_ids < 0)
-            or (np.issubdtype(return_ids.dtype, np.unsignedinteger)
-                and np.any(return_ids > np.iinfo(np.int64).max))):
-            raise ValueError("LAS fullwaveIndex values must be non-negative 64-bit integers.")
+            or (
+                np.issubdtype(return_ids.dtype, np.unsignedinteger)
+                and np.any(return_ids > np.iinfo(np.int64).max)
+            )
+        ):
+            raise ValueError(
+                "LAS fullwaveIndex values must be non-negative 64-bit integers."
+            )
         return_ids = return_ids.astype(np.int64, copy=False)
         positions = np.searchsorted(sorted_ids, return_ids)
         if np.any(positions == len(sorted_ids)) or np.any(
@@ -806,19 +883,29 @@ class PointCloudVegetationAnalysis:
         declared_counts = np.asarray(las.number_of_returns, dtype=np.int64)
         if (
             np.any(declared_counts != counts[parent])
-            or np.any(numbers < 1) or np.any(numbers > counts[parent])
+            or np.any(numbers < 1)
+            or np.any(numbers > counts[parent])
             or len(np.unique(np.column_stack((parent, numbers)), axis=0)) != len(parent)
         ):
-            raise ValueError("LAS return numbers or per-pulse return counts are inconsistent.")
+            raise ValueError(
+                "LAS return numbers or per-pulse return counts are inconsistent."
+            )
 
-        height, zenith_range, azimuth_range = self._ground_heights_and_limits(np.asarray(las.z))
+        height, zenith_range, azimuth_range = self._ground_heights_and_limits(
+            np.asarray(las.z)
+        )
         scan = CaldersScan(
-            pulse_zenith=zenith, pulse_azimuth=azimuth,
-            pulse_return_count=counts, return_pulse_index=parent,
-            return_height=height, return_number=numbers,
+            pulse_zenith=zenith,
+            pulse_azimuth=azimuth,
+            pulse_return_count=counts,
+            return_pulse_index=parent,
+            return_height=height,
+            return_number=numbers,
             return_classification=np.asarray(las.classification, dtype=np.int64),
-            min_zenith=float(zenith_range[0]), max_zenith=float(zenith_range[1]),
-            min_azimuth=float(azimuth_range[0]), max_azimuth=float(azimuth_range[1]),
+            min_zenith=float(zenith_range[0]),
+            max_zenith=float(zenith_range[1]),
+            min_azimuth=float(azimuth_range[0]),
+            max_azimuth=float(azimuth_range[1]),
         )
         return replace(self.calders_settings, scans=(scan,))
 
@@ -843,16 +930,23 @@ class PointCloudVegetationAnalysis:
         numbers = returns["return_num"].astype(np.int64)
         if (
             not np.array_equal(np.bincount(parent, minlength=len(ids)), counts)
-            or np.any(numbers < 1) or np.any(numbers > counts[parent])
+            or np.any(numbers < 1)
+            or np.any(numbers > counts[parent])
             or len(np.unique(np.column_stack((parent, numbers)), axis=0)) != len(parent)
         ):
-            raise ValueError("HDF5 return numbers and pulse return counts are inconsistent.")
+            raise ValueError(
+                "HDF5 return numbers and pulse return counts are inconsistent."
+            )
 
         origins = np.column_stack([pulses[f"origin_{axis}"] for axis in "xyz"])
-        directions = np.column_stack([pulses[f"dir_{axis}"] for axis in "xyz"]).astype(float)
+        directions = np.column_stack([pulses[f"dir_{axis}"] for axis in "xyz"]).astype(
+            float
+        )
         points = np.column_stack([returns[axis] for axis in "xyz"])
         if not all(np.isfinite(a).all() for a in (origins, directions, points)):
-            raise ValueError("HDF5 pulse geometry and return coordinates must be finite.")
+            raise ValueError(
+                "HDF5 pulse geometry and return coordinates must be finite."
+            )
         lengths = np.linalg.norm(directions, axis=1)
         if not np.all(np.isclose(lengths, 1.0, rtol=1e-5, atol=1e-6)):
             raise ValueError("HDF5 pulse directions must be unit vectors.")
@@ -864,58 +958,82 @@ class PointCloudVegetationAnalysis:
         if has_roll:
             angles = np.asarray([attrs["incl_roll"], attrs["incl_pitch"]], dtype=float)
             if angles.shape != (2,) or not np.isfinite(angles).all():
-                raise ValueError("HDF5 inclination angles must be finite scalars in radians.")
+                raise ValueError(
+                    "HDF5 inclination angles must be finite scalars in radians."
+                )
             roll, pitch = angles
             cr, sr = np.cos(roll), np.sin(roll)
             cp, sp = np.cos(pitch), np.sin(pitch)
-            rotation = np.array([
-                [cp, sp * sr, sp * cr],
-                [0.0, cr, -sr],
-                [-sp, cp * sr, cp * cr],
-            ])
+            rotation = np.array(
+                [
+                    [cp, sp * sr, sp * cr],
+                    [0.0, cr, -sr],
+                    [-sp, cp * sr, cp * cr],
+                ]
+            )
             directions = directions @ rotation.T
             points = points @ rotation.T
         else:
             warnings.warn(
                 "HDF5 inclination is absent; assuming coordinates are already level.",
-                UserWarning, stacklevel=2,
+                UserWarning,
+                stacklevel=2,
             )
         zenith = np.degrees(np.arccos(np.clip(directions[:, 2] / lengths, -1, 1)))
         azimuth = np.degrees(np.arctan2(directions[:, 1], directions[:, 0])) % 360
-        height, zenith_range, azimuth_range = self._ground_heights_and_limits(points[:, 2])
+        height, zenith_range, azimuth_range = self._ground_heights_and_limits(
+            points[:, 2]
+        )
         classification = None
         if self.source == "simulated" and "classification" in returns.dtype.names:
             classification = returns["classification"]
-            if classification.ndim != 1 or not np.issubdtype(classification.dtype, np.integer):
+            if classification.ndim != 1 or not np.issubdtype(
+                classification.dtype, np.integer
+            ):
                 raise ValueError("HDF5 return classifications must be scalar integers.")
         if classification is None and len(self.calders_settings.excluded_classes):
             raise ValueError("Class exclusions require return classifications.")
         scan = CaldersScan(
-            pulse_zenith=zenith, pulse_azimuth=azimuth,
-            pulse_return_count=counts, return_pulse_index=parent,
-            return_height=height, return_number=numbers,
+            pulse_zenith=zenith,
+            pulse_azimuth=azimuth,
+            pulse_return_count=counts,
+            return_pulse_index=parent,
+            return_height=height,
+            return_number=numbers,
             return_classification=classification,
-            min_zenith=float(zenith_range[0]), max_zenith=float(zenith_range[1]),
-            min_azimuth=float(azimuth_range[0]), max_azimuth=float(azimuth_range[1]),
+            min_zenith=float(zenith_range[0]),
+            max_zenith=float(zenith_range[1]),
+            min_azimuth=float(azimuth_range[0]),
+            max_azimuth=float(azimuth_range[1]),
         )
         return replace(self.calders_settings, scans=(scan,))
 
     def _ground_heights_and_limits(self, z):
         """Ground-reference return heights and validate the angular limits."""
         if self.ground_elevation is None:
-            raise ValueError("ground_elevation is required for ground-referenced return heights.")
+            raise ValueError(
+                "ground_elevation is required for ground-referenced return heights."
+            )
         ground = np.asarray(self.ground_elevation, dtype=float)
-        if (ground.ndim != 0 and ground.shape != (len(z),)) or not np.isfinite(ground).all():
-            raise ValueError("ground_elevation must be finite and scalar or one value per return.")
+        if (ground.ndim != 0 and ground.shape != (len(z),)) or not np.isfinite(
+            ground
+        ).all():
+            raise ValueError(
+                "ground_elevation must be finite and scalar or one value per return."
+            )
         height = z - ground
         if not np.isfinite(height).all():
             raise ValueError("Ground-referenced return heights must be finite.")
         zenith_range = np.asarray(self.zenith_range, dtype=float)
         azimuth_range = np.asarray(self.azimuth_range, dtype=float)
-        if (zenith_range.shape != (2,) or not np.isfinite(zenith_range).all()
+        if (
+            zenith_range.shape != (2,)
+            or not np.isfinite(zenith_range).all()
             or not 0 <= zenith_range[0] < zenith_range[1] <= 90
-            or azimuth_range.shape != (2,) or not np.isfinite(azimuth_range).all()
-            or not 0 <= azimuth_range[0] <= azimuth_range[1] <= 360):
+            or azimuth_range.shape != (2,)
+            or not np.isfinite(azimuth_range).all()
+            or not 0 <= azimuth_range[0] <= azimuth_range[1] <= 360
+        ):
             raise ValueError("Scan angular ranges must be ordered and in degrees.")
         return height, zenith_range, azimuth_range
 
@@ -963,7 +1081,9 @@ class PointCloudVegetationAnalysis:
         # Add any required airborne trajectory and viewing-geometry handling here.
         raise NotImplementedError("Implement airborne point-cloud preparation.")
 
-    def calculate_pavd_profile(self, prepared_cloud: CaldersProfileInput) -> dict[str, np.ndarray]:
+    def calculate_pavd_profile(
+        self, prepared_cloud: CaldersProfileInput
+    ) -> dict[str, np.ndarray]:
         """
         Calculate single-position TLS profiles using Calders et al. (2014).
 
@@ -1009,25 +1129,41 @@ class PointCloudVegetationAnalysis:
         if not isinstance(prepared_cloud, CaldersProfileInput):
             raise TypeError("prepared_cloud must be a CaldersProfileInput.")
         config = prepared_cloud
-        if not config.scans or not all(isinstance(s, CaldersScan) for s in config.scans):
+        if not config.scans or not all(
+            isinstance(s, CaldersScan) for s in config.scans
+        ):
             raise ValueError("scans must contain at least one CaldersScan.")
         if (
-            not np.isfinite([config.min_height, config.max_height,
-                             config.height_bin_size, config.zenith_bin_size]).all()
+            not np.isfinite(
+                [
+                    config.min_height,
+                    config.max_height,
+                    config.height_bin_size,
+                    config.zenith_bin_size,
+                ]
+            ).all()
             or config.min_height >= config.max_height
-            or config.height_bin_size <= 0 or config.zenith_bin_size <= 0
+            or config.height_bin_size <= 0
+            or config.zenith_bin_size <= 0
         ):
             raise ValueError("Height and zenith bin settings must be finite and valid.")
         if config.total_pai_method not in ("hinge", "linear", "external"):
-            raise ValueError("total_pai_method must be 'hinge', 'linear', or 'external'.")
+            raise ValueError(
+                "total_pai_method must be 'hinge', 'linear', or 'external'."
+            )
         if config.total_pai_method == "external" and (
-            config.external_pai is None or not np.isfinite(config.external_pai)
+            config.external_pai is None
+            or not np.isfinite(config.external_pai)
             or config.external_pai < 0
         ):
             raise ValueError("external_pai must be finite and non-negative.")
         for scan in config.scans:
-            limits = (scan.min_zenith, scan.max_zenith,
-                      scan.min_azimuth, scan.max_azimuth)
+            limits = (
+                scan.min_zenith,
+                scan.max_zenith,
+                scan.min_azimuth,
+                scan.max_azimuth,
+            )
             if (
                 not np.isfinite(limits).all()
                 or not 0 <= scan.min_zenith < scan.max_zenith <= 90
@@ -1037,12 +1173,16 @@ class PointCloudVegetationAnalysis:
 
         zenith = np.arange(
             min(s.min_zenith for s in config.scans) + config.zenith_bin_size / 2,
-            max(s.max_zenith for s in config.scans), config.zenith_bin_size,
+            max(s.max_zenith for s in config.scans),
+            config.zenith_bin_size,
         )
-        height = np.arange(min(0.0, config.min_height), config.max_height,
-                           config.height_bin_size)
+        height = np.arange(
+            min(0.0, config.min_height), config.max_height, config.height_bin_size
+        )
         if len(zenith) == 0 or len(height) < 2:
-            raise ValueError("The settings must produce zenith bins and at least two height bins.")
+            raise ValueError(
+                "The settings must produce zenith bins and at least two height bins."
+            )
         shot_counts = np.zeros(len(zenith))
         interceptions = np.zeros((len(zenith), len(height)))
         for scan in config.scans:
@@ -1053,8 +1193,12 @@ class PointCloudVegetationAnalysis:
             raise ValueError("No pulses fall within the selected angular bins.")
 
         gaps = np.full(interceptions.shape, np.nan)
-        np.divide(np.cumsum(interceptions, axis=1), shot_counts[:, None],
-                  out=gaps, where=shot_counts[:, None] > 0)
+        np.divide(
+            np.cumsum(interceptions, axis=1),
+            shot_counts[:, None],
+            out=gaps,
+            where=shot_counts[:, None] > 0,
+        )
         gaps = 1.0 - gaps
         # Round-off in weighted returns must not turn a closed canopy negative.
         gaps = np.clip(gaps, 0.0, 1.0)
@@ -1074,7 +1218,9 @@ class PointCloudVegetationAnalysis:
             design = np.column_stack((x[observed], np.ones(np.count_nonzero(observed))))
             if np.linalg.matrix_rank(design) < 2:
                 continue
-            vertical, horizontal = np.linalg.lstsq(design, depth[observed], rcond=None)[0]
+            vertical, horizontal = np.linalg.lstsq(design, depth[observed], rcond=None)[
+                0
+            ]
             if vertical < 0:
                 vertical, horizontal = 0.0, np.mean(depth[observed])
             if horizontal < 0:
@@ -1095,7 +1241,9 @@ class PointCloudVegetationAnalysis:
             weights = np.sin(radians[active])
             with np.errstate(divide="ignore", invalid="ignore"):
                 proportions = optical_depth[active] / optical_depth[active, -1, None]
-                weighted_pai = total_pai * np.average(proportions, axis=0, weights=weights)
+                weighted_pai = total_pai * np.average(
+                    proportions, axis=0, weights=weights
+                )
         with np.errstate(invalid="ignore"):
             return {
                 "height": height,
@@ -1120,46 +1268,76 @@ class PointCloudVegetationAnalysis:
         return_height = np.asarray(scan.return_height, dtype=float)
         number = np.asarray(scan.return_number)
         classification = (
-            None if scan.return_classification is None
+            None
+            if scan.return_classification is None
             else np.asarray(scan.return_classification)
         )
         if classification is None and len(config.excluded_classes):
             raise ValueError("Class exclusions require return classifications.")
         if (
-            any(a.ndim != 1 for a in
-                (pulse_zenith, pulse_azimuth, return_count, parent,
-                 return_height, number))
+            any(
+                a.ndim != 1
+                for a in (
+                    pulse_zenith,
+                    pulse_azimuth,
+                    return_count,
+                    parent,
+                    return_height,
+                    number,
+                )
+            )
             or len(pulse_zenith) != len(pulse_azimuth)
             or len(pulse_zenith) != len(return_count)
             or len(parent) != len(return_height)
             or len(parent) != len(number)
-            or (classification is not None
-                and (classification.ndim != 1 or len(parent) != len(classification)))
+            or (
+                classification is not None
+                and (classification.ndim != 1 or len(parent) != len(classification))
+            )
         ):
-            raise ValueError("Pulse and return arrays must be one-dimensional and aligned.")
+            raise ValueError(
+                "Pulse and return arrays must be one-dimensional and aligned."
+            )
         if (
-            not np.isfinite(pulse_zenith).all() or not np.isfinite(pulse_azimuth).all()
+            not np.isfinite(pulse_zenith).all()
+            or not np.isfinite(pulse_azimuth).all()
             or not np.isfinite(return_height).all()
             or np.any((pulse_zenith < 0) | (pulse_zenith > 180))
             or np.any((pulse_azimuth < 0) | (pulse_azimuth > 360))
         ):
-            raise ValueError("Pulse angles and return heights must be finite and valid.")
-        if (not all(a.size == 0 or np.issubdtype(a.dtype, np.integer) for a in
-                    (return_count, parent, number))
-            or (classification is not None and classification.size != 0
-                and not np.issubdtype(classification.dtype, np.integer))):
-            raise ValueError("Pulse counts, indices, return numbers, and classes must be integers.")
+            raise ValueError(
+                "Pulse angles and return heights must be finite and valid."
+            )
+        if not all(
+            a.size == 0 or np.issubdtype(a.dtype, np.integer)
+            for a in (return_count, parent, number)
+        ) or (
+            classification is not None
+            and classification.size != 0
+            and not np.issubdtype(classification.dtype, np.integer)
+        ):
+            raise ValueError(
+                "Pulse counts, indices, return numbers, and classes must be integers."
+            )
         return_count = return_count.astype(np.int64)
         parent = parent.astype(np.int64)
         number = number.astype(np.int64)
         if (
-            np.any(return_count < 0) or np.any(parent < 0)
-            or np.any(parent >= len(return_count)) or np.any(number < 1)
+            np.any(return_count < 0)
+            or np.any(parent < 0)
+            or np.any(parent >= len(return_count))
+            or np.any(number < 1)
             or np.any(number > return_count[parent])
-            or not np.array_equal(np.bincount(parent, minlength=len(return_count)), return_count)
+            or not np.array_equal(
+                np.bincount(parent, minlength=len(return_count)), return_count
+            )
         ):
-            raise ValueError("Return indices, numbers, and pulse return counts are inconsistent.")
-        if len(parent) and len(np.unique(np.column_stack((parent, number)), axis=0)) != len(parent):
+            raise ValueError(
+                "Return indices, numbers, and pulse return counts are inconsistent."
+            )
+        if len(parent) and len(
+            np.unique(np.column_stack((parent, number)), axis=0)
+        ) != len(parent):
             raise ValueError("Each pulse must have unique return numbers.")
 
         for i, center in enumerate(zenith):
@@ -1173,7 +1351,8 @@ class PointCloudVegetationAnalysis:
             )
             shots[i] += np.count_nonzero(pulse_mask)
             selected = (
-                pulse_mask[parent] & (return_height > config.min_height)
+                pulse_mask[parent]
+                & (return_height > config.min_height)
                 & (return_height >= height[0])
                 & (return_height < height[-1] + config.height_bin_size)
             )
@@ -1181,11 +1360,17 @@ class PointCloudVegetationAnalysis:
                 selected &= ~np.isin(classification, config.excluded_classes)
             if not config.weighted:
                 selected &= number == 1
-            indices = np.floor((return_height[selected] - height[0]) /
-                               config.height_bin_size).astype(int)
-            weights = (1.0 / return_count[parent[selected]] if config.weighted
-                       else np.ones(len(indices)))
-            interceptions[i] += np.bincount(indices, weights=weights, minlength=len(height))
+            indices = np.floor(
+                (return_height[selected] - height[0]) / config.height_bin_size
+            ).astype(int)
+            weights = (
+                1.0 / return_count[parent[selected]]
+                if config.weighted
+                else np.ones(len(indices))
+            )
+            interceptions[i] += np.bincount(
+                indices, weights=weights, minlength=len(height)
+            )
 
     def calculate_pai(self, pavd_profile, height_range=None):
         """
@@ -1229,18 +1414,27 @@ class PointCloudVegetationAnalysis:
         """
         heights = np.asarray(pavd_profile["height"], dtype=float)
         if (
-            heights.ndim != 1 or len(heights) < 2
+            heights.ndim != 1
+            or len(heights) < 2
             or not np.isfinite(heights).all()
             or np.any(np.diff(heights) <= 0)
         ):
-            raise ValueError("Profile heights must be finite, increasing, and contain at least two samples.")
+            raise ValueError(
+                "Profile heights must be finite, increasing, and contain at least two samples."
+            )
 
         if height_range is None:
             first, last = 0, len(heights) - 1
         else:
             bounds = np.asarray(height_range, dtype=float)
-            if bounds.shape != (2,) or not np.isfinite(bounds).all() or bounds[0] >= bounds[1]:
-                raise ValueError("height_range must contain two finite, increasing sample heights.")
+            if (
+                bounds.shape != (2,)
+                or not np.isfinite(bounds).all()
+                or bounds[0] >= bounds[1]
+            ):
+                raise ValueError(
+                    "height_range must contain two finite, increasing sample heights."
+                )
             indices = []
             for bound in bounds:
                 # Permit only floating-point round-off, not interpolation or
@@ -1248,23 +1442,28 @@ class PointCloudVegetationAnalysis:
                 tolerance = 8 * np.finfo(float).eps * max(1.0, abs(bound))
                 matches = np.flatnonzero(np.abs(heights - bound) <= tolerance)
                 if len(matches) != 1:
-                    raise ValueError("height_range bounds must match existing profile sample heights.")
+                    raise ValueError(
+                        "height_range bounds must match existing profile sample heights."
+                    )
                 indices.append(int(matches[0]))
             first, last = indices
             if first >= last:
-                raise ValueError("height_range must include at least two profile samples.")
+                raise ValueError(
+                    "height_range must include at least two profile samples."
+                )
 
-        selected_heights = heights[first:last + 1]
+        selected_heights = heights[first : last + 1]
         results = {}
         for estimator in ("hinge", "linear", "weighted"):
             values = np.asarray(pavd_profile[f"{estimator}_pavd"], dtype=float)
             if values.ndim != 1 or values.shape != heights.shape:
                 raise ValueError(f"{estimator}_pavd must match the height array.")
-            selected = values[first:last + 1]
+            selected = values[first : last + 1]
             nan_bins = np.flatnonzero(np.isnan(selected)) + first
             infinite_bins = np.flatnonzero(np.isinf(selected)) + first
             pai = (
-                float("nan") if len(nan_bins) or len(infinite_bins)
+                float("nan")
+                if len(nan_bins) or len(infinite_bins)
                 else float(simpson(selected, x=selected_heights))
             )
             results[estimator] = {

@@ -1,0 +1,23 @@
+# Placeholder metadata from the README; replace before publishing.
+cff-version: 1.2.0
+message: "This citation is a placeholder; replace it with publication details."
+type: software
+title: "Software Title"
+authors:
+  - family-names: "Lastname"
+    given-names: "Firstname"
+version: "v1.0.0"
+url: "https://doi.org"
+preferred-citation:
+  type: software
+  title: "Software Title"
+  authors:
+    - family-names: "Lastname"
+      given-names: "Firstname"
+  year: 2026
+  publisher:
+    name: "Zenodo"
+  version: "v1.0.0"
+  url: "https://doi.org"
+  # Placeholder DOI from the README: 10.5281/zenodo.XXXXXXX
+  # The release month is also a placeholder and is not specified here.

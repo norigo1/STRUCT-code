@@ -69,9 +69,7 @@ class LAICalculations:
         b = time.time()
         print(float(b - a) / 60.0, np.sum(sum_inn == 3))
 
-        norms, pts = self.get_voxel_normals(
-            xmin, xmax, ymin, ymax, zmin, zmax
-        )
+        norms, pts = self.get_voxel_normals(xmin, xmax, ymin, ymax, zmin, zmax)
 
         c = time.time()
         new_areas = []
@@ -180,9 +178,7 @@ class LAICalculations:
         return ncp, points
 
     @staticmethod
-    def intersect_segment_voxel_plane(
-        A, B, P0, N, xmin, xmax, ymin, ymax, zmin, zmax
-    ):
+    def intersect_segment_voxel_plane(A, B, P0, N, xmin, xmax, ymin, ymax, zmin, zmax):
         """
         Find the intersection of segment AB with a voxel face plane.
 

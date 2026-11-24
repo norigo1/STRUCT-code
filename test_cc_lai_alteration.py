@@ -11,7 +11,6 @@ from unittest import mock
 
 import numpy as np
 
-
 ROOT = pathlib.Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -19,6 +18,7 @@ if str(ROOT) not in sys.path:
 try:
     import scipy  # noqa: F401
     import shapely  # noqa: F401
+
     REAL_GEOMETRY_AVAILABLE = True
 except ImportError:
     REAL_GEOMETRY_AVAILABLE = False
@@ -109,13 +109,20 @@ def write_unit_leaf_mesh(path):
     for z in (1, 2):
         for x in (0, 1):
             first = len(vertices)
-            vertices.extend([
-                (x, 0, z), (x + 1, 0, z), (x + 1, 1, z), (x, 1, z),
-            ])
-            faces.extend([
-                (first, first + 1, first + 2),
-                (first, first + 2, first + 3),
-            ])
+            vertices.extend(
+                [
+                    (x, 0, z),
+                    (x + 1, 0, z),
+                    (x + 1, 1, z),
+                    (x, 1, z),
+                ]
+            )
+            faces.extend(
+                [
+                    (first, first + 1, first + 2),
+                    (first, first + 2, first + 3),
+                ]
+            )
     write_ascii_ply(path, vertices, faces)
 
 
@@ -150,7 +157,9 @@ class SceneMeshTests(unittest.TestCase):
         self.terrain_path = self.root / "terrain.ply"
         write_unit_leaf_mesh(self.leaf_path)
         write_unit_wood_mesh(self.wood_path)
-        write_ascii_ply(self.terrain_path, [(0, 0, 0), (2, 0, 0), (0, 1, 0)], [(0, 1, 2)])
+        write_ascii_ply(
+            self.terrain_path, [(0, 0, 0), (2, 0, 0), (0, 1, 0)], [(0, 1, 2)]
+        )
         self.scene_path = self.root / "scene.xml"
         scene = ET.Element("scene")
         for path in (self.leaf_path, self.wood_path, self.terrain_path):
@@ -171,8 +180,8 @@ class SceneMeshTests(unittest.TestCase):
         """Verify scene-wide LAI and PAI against known mesh areas."""
         calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
 
-        leaf_area, ground_area, per_mesh_leaf_area = calculator.calculate_leaf_area_index(
-            0, 2, 0, 1
+        leaf_area, ground_area, per_mesh_leaf_area = (
+            calculator.calculate_leaf_area_index(0, 2, 0, 1)
         )
         plant_area, _, per_mesh_plant_area = calculator.calculate_plant_area_index(
             0, 2, 0, 1
@@ -188,7 +197,9 @@ class SceneMeshTests(unittest.TestCase):
         """Verify zmin and zmax select faces by height and are validated."""
         calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
 
-        upper, ground_area, _ = calculator.calculate_leaf_area_index(0, 2, 0, 1, zmin=1.5)
+        upper, ground_area, _ = calculator.calculate_leaf_area_index(
+            0, 2, 0, 1, zmin=1.5
+        )
         lower, _, _ = calculator.calculate_leaf_area_index(0, 2, 0, 1, zmax=1.5)
         none, _, _ = calculator.calculate_leaf_area_index(0, 2, 0, 1, zmin=10)
         plant, _, _ = calculator.calculate_plant_area_index(0, 2, 0, 1, zmin=1.5)
@@ -214,8 +225,9 @@ class SceneMeshTests(unittest.TestCase):
         scene.write_text(f'<scene><param key="filepath" value="{path}"/></scene>')
         calculator = lai_module.CalculateVegAreaIndex(str(scene))
         reader = lai_module.SceneReader.read_obj
-        with mock.patch.object(lai_module.SceneReader, "read_obj", autospec=True,
-                               side_effect=reader) as read:
+        with mock.patch.object(
+            lai_module.SceneReader, "read_obj", autospec=True, side_effect=reader
+        ) as read:
             area, ground, per_mesh = calculator.calculate_leaf_area_index(
                 [0, 1], [1, 2], 0, 1, zmin=0, zmax=1, method="clip"
             )
@@ -265,7 +277,9 @@ class SceneMeshTests(unittest.TestCase):
             [0, 1], [1, 2], 0, 1, method="clip"
         )
         np.testing.assert_allclose(plant, leaf + wood)
-        np.testing.assert_allclose(meshes, np.concatenate((leaf_mesh, wood_mesh), axis=1))
+        np.testing.assert_allclose(
+            meshes, np.concatenate((leaf_mesh, wood_mesh), axis=1)
+        )
         np.testing.assert_array_equal(ground, [1, 1])
         for kwargs in (
             {"xmin": [0, 1, 2], "xmax": [1, 2]},
@@ -282,18 +296,24 @@ class SceneMeshTests(unittest.TestCase):
         other = self.root / "other_leaves.ply"
         write_ascii_ply(other, [(10, 0, 0), (11, 0, 0), (10, 1, 0)], [(0, 1, 2)])
         scene = ET.parse(self.scene_path)
-        ET.SubElement(scene.getroot(), "param", {"key": "filepath", "value": str(other)})
+        ET.SubElement(
+            scene.getroot(), "param", {"key": "filepath", "value": str(other)}
+        )
         scene.write(self.scene_path)
         calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
         read_ply = lai_module.SceneReader.read_ply
-        with mock.patch.object(lai_module.SceneReader, "read_ply", autospec=True,
-                               side_effect=read_ply) as read:
+        with mock.patch.object(
+            lai_module.SceneReader, "read_ply", autospec=True, side_effect=read_ply
+        ) as read:
             first = calculator.calculate_leaf_area_index(0, 1, 0, 1, method="clip")
             self.assertEqual(read.call_count, 2)
             self.assertTrue(calculator.mesh_summary_path.exists())
             summary = np.load(calculator.mesh_summary_path, allow_pickle=False)
             self.assertEqual(len(summary), 2)
-            self.assertEqual(set(summary["path"]), {str(self.leaf_path.resolve()), str(other.resolve())})
+            self.assertEqual(
+                set(summary["path"]),
+                {str(self.leaf_path.resolve()), str(other.resolve())},
+            )
             record = summary[summary["path"] == str(self.leaf_path.resolve())][0]
             np.testing.assert_array_equal(record["minimum"], [0, 0, 1])
             np.testing.assert_array_equal(record["maximum"], [2, 1, 2])
@@ -303,7 +323,9 @@ class SceneMeshTests(unittest.TestCase):
             fresh = lai_module.CalculateVegAreaIndex(str(self.scene_path))
             second = fresh.calculate_leaf_area_index(0, 1, 0, 1, method="clip")
             self.assertEqual(read.call_count, 1)
-            self.assertEqual(pathlib.Path(read.call_args.args[1]), self.leaf_path.resolve())
+            self.assertEqual(
+                pathlib.Path(read.call_args.args[1]), self.leaf_path.resolve()
+            )
             np.testing.assert_allclose(first[0], second[0])
             np.testing.assert_allclose(first[2], second[2])
 
@@ -314,18 +336,25 @@ class SceneMeshTests(unittest.TestCase):
             read.reset_mock()
             calculator.calculate_plant_area_index(-1, 3, -1, 2)
             self.assertEqual(read.call_count, 1)
-            self.assertEqual(pathlib.Path(read.call_args.args[1]), self.wood_path.resolve())
-            self.assertEqual(len(np.load(calculator.mesh_summary_path, allow_pickle=False)), 3)
+            self.assertEqual(
+                pathlib.Path(read.call_args.args[1]), self.wood_path.resolve()
+            )
+            self.assertEqual(
+                len(np.load(calculator.mesh_summary_path, allow_pickle=False)), 3
+            )
 
     def test_mesh_summary_refreshes_changed_mesh(self):
         """Rebuild stale entries before deciding which meshes intersect a box."""
         calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
         initial = calculator.calculate_leaf_area_index(0, 2, 0, 1, method="clip")
         self.assertAlmostEqual(initial[0], 4)
-        write_ascii_ply(self.leaf_path, [(10, 0, 0), (11, 0, 0), (10, 1, 0)], [(0, 1, 2)])
+        write_ascii_ply(
+            self.leaf_path, [(10, 0, 0), (11, 0, 0), (10, 1, 0)], [(0, 1, 2)]
+        )
         reader = lai_module.SceneReader.read_ply
-        with mock.patch.object(lai_module.SceneReader, "read_ply", autospec=True,
-                               side_effect=reader) as read:
+        with mock.patch.object(
+            lai_module.SceneReader, "read_ply", autospec=True, side_effect=reader
+        ) as read:
             result = calculator.calculate_leaf_area_index(0, 2, 0, 1, method="clip")
             self.assertEqual(read.call_count, 1)
             self.assertEqual(result[0], 0)
@@ -366,9 +395,12 @@ class SceneMeshTests(unittest.TestCase):
             for x in range(3):
                 for y in range(3):
                     for z in range(3):
-                        total += lai_module.CalculateVegAreaIndex._clipped_triangle_area(
-                            triangle, np.array([edges[x], edges[y], edges[z]]),
-                            np.array([edges[x + 1], edges[y + 1], edges[z + 1]]),
+                        total += (
+                            lai_module.CalculateVegAreaIndex._clipped_triangle_area(
+                                triangle,
+                                np.array([edges[x], edges[y], edges[z]]),
+                                np.array([edges[x + 1], edges[y + 1], edges[z + 1]]),
+                            )
                         )
             self.assertAlmostEqual(total, expected, places=12)
 
@@ -426,10 +458,12 @@ class SceneMeshTests(unittest.TestCase):
         new_scene_path = pathlib.Path(reducer.create_new_scene())
         new_lai, new_pai = reducer.calculate_new_indices()
         new_scene_files = lai_module.SceneReader(str(new_scene_path)).read_scene()
-        new_leaf_path = pathlib.Path(next(path for path in new_scene_files if "leaves" in path))
-        reduced_vertices, reduced_faces = lai_module.SceneReader(str(new_scene_path)).read_ply(
-            new_leaf_path
+        new_leaf_path = pathlib.Path(
+            next(path for path in new_scene_files if "leaves" in path)
         )
+        reduced_vertices, reduced_faces = lai_module.SceneReader(
+            str(new_scene_path)
+        ).read_ply(new_leaf_path)
 
         self.assertTrue(new_scene_path.exists())
         self.assertTrue(new_leaf_path.exists())
@@ -454,14 +488,16 @@ class SceneMeshTests(unittest.TestCase):
             for index in range(10):
                 x = index * 4.0
                 first = len(vertices)
-                vertices.extend([
-                    (
-                        x + radius * np.cos(angle * np.pi / 3),
-                        radius * np.sin(angle * np.pi / 3),
-                        height,
-                    )
-                    for angle in range(6)
-                ])
+                vertices.extend(
+                    [
+                        (
+                            x + radius * np.cos(angle * np.pi / 3),
+                            radius * np.sin(angle * np.pi / 3),
+                            height,
+                        )
+                        for angle in range(6)
+                    ]
+                )
                 leaf_faces = [
                     (first + 1, first + index + 1, first + index + 2)
                     for index in range(1, 5)
@@ -475,22 +511,30 @@ class SceneMeshTests(unittest.TestCase):
         all_areas = []
         kept_areas = []
         for height in (1.0, 2.0):
-            band_ids = np.flatnonzero(
-                np.mean(vertices[faces - 1, 2], axis=1) == height
-            )
+            band_ids = np.flatnonzero(np.mean(vertices[faces - 1, 2], axis=1) == height)
             kept_band_ids = np.intersect1d(band_ids, kept_faces)
             face_vertices = vertices[faces[band_ids] - 1]
             kept_vertices = vertices[faces[kept_band_ids] - 1]
-            band_area = 0.5 * np.linalg.norm(
-                np.cross(face_vertices[:, 1] - face_vertices[:, 0],
-                         face_vertices[:, 2] - face_vertices[:, 0]),
-                axis=1,
-            ).sum()
-            kept_area = 0.5 * np.linalg.norm(
-                np.cross(kept_vertices[:, 1] - kept_vertices[:, 0],
-                         kept_vertices[:, 2] - kept_vertices[:, 0]),
-                axis=1,
-            ).sum()
+            band_area = (
+                0.5
+                * np.linalg.norm(
+                    np.cross(
+                        face_vertices[:, 1] - face_vertices[:, 0],
+                        face_vertices[:, 2] - face_vertices[:, 0],
+                    ),
+                    axis=1,
+                ).sum()
+            )
+            kept_area = (
+                0.5
+                * np.linalg.norm(
+                    np.cross(
+                        kept_vertices[:, 1] - kept_vertices[:, 0],
+                        kept_vertices[:, 2] - kept_vertices[:, 0],
+                    ),
+                    axis=1,
+                ).sum()
+            )
             all_areas.append(band_area)
             kept_areas.append(kept_area)
 

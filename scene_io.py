@@ -185,10 +185,10 @@ class SceneReader:
             fields = line.split()
             if len(fields) == 3 and fields[0] == "element":
                 elements.append((fields[1], int(fields[2])))
-        body = lines[end_header + 1:]
+        body = lines[end_header + 1 :]
         offset = 0
         for element_name, count in elements:
-            records = body[offset:offset + count]
+            records = body[offset : offset + count]
             if len(records) != count:
                 raise ValueError(f"PLY element records are incomplete: {filename}")
             if element_name == "vertex":

@@ -53,7 +53,9 @@ class HeliosSimulationTests(unittest.TestCase):
                 param.get("value")
                 for param in scene.findall(".//param[@key='filepath']")
             ]
-            self.assertEqual(filepaths, [str(terrain), str(nearby_stem), str(nearby_leaf)])
+            self.assertEqual(
+                filepaths, [str(terrain), str(nearby_stem), str(nearby_leaf)]
+            )
 
     def test_rebuild_survey_legs_from_grid_replaces_old_legs(self):
         """Replace existing survey legs with grid locations and settings."""

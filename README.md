@@ -1,7 +1,7 @@
 # Harmonising forest structural metrics from LiDAR and passive optical instruments across scales (STRUCT) / STRUCT-code
 
-[![DOI](https://zenodo.org)](https://doi.org)
-[![License: GPL v3](https://shields.io)](https://gnu.org)
+![DOI: pending](https://img.shields.io/badge/DOI-pending-lightgrey)
+[![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
 > **Brief summary:** The software presented here gives users a suite of tools to set-up radiative transfer simulations and process their outputs to retrieve forest structural metrics.
 
@@ -14,7 +14,7 @@ This software was developed as part of the **STRUCT** project (*Harmonising fore
 * **Purpose:** The library presented here is a suite of tools to set up and process radiative transfer simulations that assess the structure of forests. This deals with the amendment of existing 3D models of forests to correspond to 'true' forest structural parameters as well as the simulation and processing to produce the expected outputs from measurement instruments that would be used in the field.
 * **Related Publications:** To follow
 
-<!Link to preprints, peer-reviewed papers, or datasets on [Open Research Europe](https://open-research-europe.ec.europa.eu/ "Open Research Europe") or [Zenodo](https://zenodo.org "Zenodo") that this code validates.>
+<!-- Link to preprints, peer-reviewed papers, or datasets on [Open Research Europe](https://open-research-europe.ec.europa.eu/ "Open Research Europe") or [Zenodo](https://zenodo.org "Zenodo") that this code validates. -->
 
 ---
 
@@ -35,17 +35,9 @@ pip install -r requirements.txt
 ---
 
 ## Usage & Reproducibility
-To follow
-
-<!Provide a minimal working example and instructions for reproducing figures or tables from your publications.>
-
-<!```bash>
-<!# Example execution command>
-<!python run_experiment.py --config configs/default.yaml>
-<!```>
-
-<!* **Input Data:** Explain where to download the input dataset (e.g., via Zenodo DOI) and where to place it.>
-<!* **Expected Output:** Briefly describe the generated files, logs, or plots.>
+See [CODE_EXAMPLES.md](./CODE_EXAMPLES.md) for examples covering HELIOS scene and
+survey preparation, occlusion and point-cloud analysis, and scene LAI/PAI
+calculations.
 
 ---
 
@@ -53,18 +45,18 @@ To follow
 To follow
 <!If you use this software in your research, please cite both the software archive and the accompanying paper (see `CITATION.cff` for metadata):>
 
-<!```bibtex>
-<!@software{lastname_year_software,>
-<!  author       = {Lastname, Firstname},>
-<!  title        = {{Software Title}},>
-<!  month        = mon,>
-<!  year         = 2026,>
-<!  publisher    = {Zenodo},>
-<!  version      = {v1.0.0},>
-<!  doi          = {10.5281/zenodo.XXXXXXX},>
-<!  url          = {https://doi.org}>
-<!}>
-<!```>
+```bibtex
+@software{Origoetal_2026_STRUCT,
+  author       = {Origo, Niall and Massaro, Simone and Van den Broeck, Wouter and Calders, Kim},
+  title        = {{STRUCT-code}},
+  month        = mon,
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {v1.0.0},
+  doi          = {10.5281/zenodo.XXXXXXX},
+  url          = {https://doi.org}
+}
+```
 
 ---
 

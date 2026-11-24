@@ -10,12 +10,12 @@
 """Prepare mesh-derived rasters and run or inspect Occpy voxel outputs."""
 
 import glob
+
 import numpy as np
-from osgeo import gdal
 import occpy
 import plyfile
 import scipy
-
+from osgeo import gdal
 from PIL import Image
 
 from scene_io import read_obj_mesh
@@ -47,28 +47,34 @@ class RunOccpy:
         self.occpy.define_sensor_pos(
             path2file=config["ScanPos"],
             delimiter=",",
-            hdr_scanpos_id='#Name',
-            hdr_x='X',
-            hdr_y='Y',
-            hdr_z='Z',
-            sens_pos_id_offset=0
+            hdr_scanpos_id="#Name",
+            hdr_x="X",
+            hdr_y="Y",
+            hdr_z="Z",
+            sens_pos_id_offset=0,
         )
         self.occpy.do_raytracing()
 
         results = occpy.util.normalize_occlusion_output(
-            input_folder=os.path.join(config["root_folder"], config['out_dir']),
-            PlotDim=config['plot_dim'],
-            vox_dim=config['vox_dim'],
-            dtm_file=os.path.join(config["root_folder"], config['tif_in']['DTM']),
-            dsm_file=os.path.join(config["root_folder"], config['tif_in']['DSM']),
-            lower_threshold=config['lower_threshold'],
-            output_voxels=config['output_voxels']
+            input_folder=os.path.join(config["root_folder"], config["out_dir"]),
+            PlotDim=config["plot_dim"],
+            vox_dim=config["vox_dim"],
+            dtm_file=os.path.join(config["root_folder"], config["tif_in"]["DTM"]),
+            dsm_file=os.path.join(config["root_folder"], config["tif_in"]["DSM"]),
+            lower_threshold=config["lower_threshold"],
+            output_voxels=config["output_voxels"],
         )
-        self.Nhit_norm, self.Nmiss_norm, self.Nocc_norm, self.Classification_norm, self.chm = results
+        (
+            self.Nhit_norm,
+            self.Nmiss_norm,
+            self.Nocc_norm,
+            self.Classification_norm,
+            self.chm,
+        ) = results
 
     def get_voxel_coords(self):
         """
-        Return the coordinates of each voxel at minx, miny and minz, and maxx, maxy and maxz of that 
+        Return the coordinates of each voxel at minx, miny and minz, and maxx, maxy and maxz of that
         voxel
 
         Returns:
@@ -79,19 +85,19 @@ class RunOccpy:
                n x 3 numpy array containing the maxx, maxy and maxz coordinates of the voxel
         """
         minx = np.arange(
-            self.config["plot_dim"][0], 
-            self.config["plot_dim"][3], 
-            self.config["vox_dim"]
+            self.config["plot_dim"][0],
+            self.config["plot_dim"][3],
+            self.config["vox_dim"],
         )
         miny = np.arange(
-            self.config["plot_dim"][1], 
-            self.config["plot_dim"][4], 
-            self.config["vox_dim"]
+            self.config["plot_dim"][1],
+            self.config["plot_dim"][4],
+            self.config["vox_dim"],
         )
         minz = np.arange(
-            self.config["plot_dim"][2], 
-            self.config["plot_dim"][5], 
-            self.config["vox_dim"]
+            self.config["plot_dim"][2],
+            self.config["plot_dim"][5],
+            self.config["vox_dim"],
         )
         maxx = minx + self.config["vox_dim"]
         maxy = miny + self.config["vox_dim"]
@@ -107,14 +113,14 @@ class RunOccpy:
         Return the coordinates of the occluded voxels
 
         Classification is binary and based on:
-          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
-          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote
           Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
 
         Returns:
         --------
         occ_min : np.arr, float
-                  n x 3 array of the minimums of the occluded voxel coordinates 
+                  n x 3 array of the minimums of the occluded voxel coordinates
         occ_max : np.arr, float
                   n x 3 array of the maximums of the occluded voxel coordinates
         """
@@ -125,14 +131,14 @@ class RunOccpy:
         Return the coordinates of the hit voxels (i.e. with interactions)
 
         Classification is binary and based on:
-          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
-          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote
           Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
 
         Returns:
         --------
         hit_min : np.arr, float
-                  n x 3 array of the minimums of the occluded voxel coordinates 
+                  n x 3 array of the minimums of the occluded voxel coordinates
         hit_max : np.arr, float
                   n x 3 array of the maximums of the occluded voxel coordinates
         """
@@ -143,14 +149,14 @@ class RunOccpy:
         Return the coordinates of the empty voxels
 
         Classification is binary and based on:
-          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
-          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote
           Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
 
         Returns:
         --------
         emp_min : np.arr, float
-                  n x 3 array of the minimums of the occluded voxel coordinates 
+                  n x 3 array of the minimums of the occluded voxel coordinates
         emp_max : np.arr, float
                   n x 3 array of the maximums of the occluded voxel coordinates
         """
@@ -161,14 +167,14 @@ class RunOccpy:
         Return the coordinates of the unobserved voxels
 
         Classification is binary and based on:
-          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial 
-          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote 
+          Bienert, A., Queck, R., Schmidt, A., 2010. Voxel space analysis of terrestrial
+          laser scans in forests for wind field modeling. Int. Arch. Photogramm. Remote
           Sens. Spat. Inf. Sci. ISPRS Arch. 38, 92–97.
 
         Returns:
         --------
         uno_min : np.arr, float
-                  n x 3 array of the minimums of the occluded voxel coordinates 
+                  n x 3 array of the minimums of the occluded voxel coordinates
         uno_max : np.arr, float
                   n x 3 array of the maximums of the occluded voxel coordinates
         """
@@ -194,19 +200,23 @@ class RunOccpy:
         maxs : np.arr, float
                n x 3 array of the maximums of the classified voxel coordinates
         """
-        xinds, yinds, zinds = np.where(classif==num)
+        xinds, yinds, zinds = np.where(classif == num)
         vmin_coords, vmax_coords = self.get_voxel_coordinates()
 
-        mins = np.column_stack((
-                   vmin_coords[:,0][xinds],
-                   vmin_coords[:,1][yinds],
-                   vmin_coords[:,2][zinds]
-        ))
-        maxs = np.column_stack((
-                   vmax_coords[:,0][xinds],
-                   vmax_coords[:,1][yinds],
-                   vmax_coords[:,2][zinds]
-        ))
+        mins = np.column_stack(
+            (
+                vmin_coords[:, 0][xinds],
+                vmin_coords[:, 1][yinds],
+                vmin_coords[:, 2][zinds],
+            )
+        )
+        maxs = np.column_stack(
+            (
+                vmax_coords[:, 0][xinds],
+                vmax_coords[:, 1][yinds],
+                vmax_coords[:, 2][zinds],
+            )
+        )
         return mins, maxs
 
 
@@ -225,26 +235,26 @@ class ModelBoundaries:
                         The names expected are 'terrain', 'wood', 'leaves'
                         and 'snags' (wood without leaves).
         terrain_fname : str
-                        Just the filename of the terrain mesh. If None (default) 
-                        then it is assumed there is only one mesh file in the 
+                        Just the filename of the terrain mesh. If None (default)
+                        then it is assumed there is only one mesh file in the
                         folder.
         fmt           : str; default='obj'
                         Format of the meshes: either 'obj' or 'ply'
         """
         self.fmt = fmt
-        if mesh_dir[-1]=="/":
+        if mesh_dir[-1] == "/":
             pass
         else:
-            mesh_dir+="/"
+            mesh_dir += "/"
 
         if not terrain_fname:
-            self.terrain = glob.glob(mesh_dir+f"terrain/*.{fmt}")[0]
+            self.terrain = glob.glob(mesh_dir + f"terrain/*.{fmt}")[0]
         else:
-            self.terrain = glob.glob(mesh_dir+f"terrain/"+terrain_fname)[0]
+            self.terrain = glob.glob(mesh_dir + f"terrain/" + terrain_fname)[0]
 
-        self.leaves = glob.glob(mesh_dir+f"leaves/*.{fmt}")
-        self.wood = glob.glob(mesh_dir+f"wood/*.{fmt}")
-        self.snags = glob.glob(mesh_dir+f"snags/*.{fmt}")
+        self.leaves = glob.glob(mesh_dir + f"leaves/*.{fmt}")
+        self.wood = glob.glob(mesh_dir + f"wood/*.{fmt}")
+        self.snags = glob.glob(mesh_dir + f"snags/*.{fmt}")
 
     def create_DTM(self, fout):
         """
@@ -254,7 +264,7 @@ class ModelBoundaries:
         Parameters:
         -----------
         fout : str
-               Filepath to save the output tiff file to 
+               Filepath to save the output tiff file to
 
         Returns:
         --------
@@ -262,15 +272,17 @@ class ModelBoundaries:
             Writes the terrain raster to fout.
         """
         terrain_points = Reader(self.terrain)
-        npix = len(terrain_points)**0.5
-        xmin, xmax = np.min(terrain_points[:,0]), np.max(terrain_points[:,0])
-        ymin, ymax = np.min(terrain_points[:,1]), np.max(terrain_points[:,1])
-        
+        npix = len(terrain_points) ** 0.5
+        xmin, xmax = np.min(terrain_points[:, 0]), np.max(terrain_points[:, 0])
+        ymin, ymax = np.min(terrain_points[:, 1]), np.max(terrain_points[:, 1])
+
         gridx, gridy = np.meshgrid(
-                           np.linspace(xmin, xmax, int(npix)+1), 
-                           np.linspace(ymin, ymax, int(npix)+1)
-                       )
-        grid_z1 = scipy.interpolate.griddata(op[:,:2], op[:,2], (gridx, gridy), method='linear')
+            np.linspace(xmin, xmax, int(npix) + 1),
+            np.linspace(ymin, ymax, int(npix) + 1),
+        )
+        grid_z1 = scipy.interpolate.griddata(
+            op[:, :2], op[:, 2], (gridx, gridy), method="linear"
+        )
         im = Image.from_array(grid_z1)
         im.save(fout)
 
@@ -282,7 +294,7 @@ class ModelBoundaries:
         Parameters:
         -----------
         fout : str
-               Filepath to save the output tiff file to 
+               Filepath to save the output tiff file to
 
         Returns:
         --------
@@ -290,9 +302,9 @@ class ModelBoundaries:
             Writes the surface raster to fout.
         """
         terrain_points = Reader(self.terrain)
-        npix = len(terrain_points)**0.5
-        xmin, xmax = np.min(terrain_points[:,0]), np.max(terrain_points[:,0])
-        ymin, ymax = np.min(terrain_points[:,1]), np.max(terrain_points[:,1])
+        npix = len(terrain_points) ** 0.5
+        xmin, xmax = np.min(terrain_points[:, 0]), np.max(terrain_points[:, 0])
+        ymin, ymax = np.min(terrain_points[:, 1]), np.max(terrain_points[:, 1])
 
         leaf_points = []
         wood_points = []
@@ -307,14 +319,16 @@ class ModelBoundaries:
         for snag in self.snags:
             snag_points.append(Reader(snag))
 
-        all_points = np.vstack((terrain_points, leaf_points + wood_points + snag_points)) 
+        all_points = np.vstack(
+            (terrain_points, leaf_points + wood_points + snag_points)
+        )
         max_vals = scipy.stats.binned_statistic_2d(
-                       all_points[:,0], 
-                       all_points[:,1], 
-                       all_points[:,2],
-                       statistic="max",
-                       bins=(int(npix)+1, int(npix)+1)
-                   )
+            all_points[:, 0],
+            all_points[:, 1],
+            all_points[:, 2],
+            statistic="max",
+            bins=(int(npix) + 1, int(npix) + 1),
+        )
         im = Image.fromarray(max_vals.statistic.T)
         im.save(fout)
 
@@ -348,15 +362,16 @@ class ModelBoundaries:
         """
         ds = gdal.Open(fname, gdal.GA_Updates)
         fname_spl = fname.split(".")
-        fname_dst = "".join(fpath_spl[:-1])+"_gtform."+fpath_spl[-1]
+        fname_dst = "".join(fpath_spl[:-1]) + "_gtform." + fpath_spl[-1]
         geotransform = gdal.Translate(
-                           fname_dst, 
-                           fname, 
-                           outputBounds=(ulx, uly, lrx, lry), 
-                           xRes=pix_resx, 
-                           yRes=pix_resy
-                       )
+            fname_dst,
+            fname,
+            outputBounds=(ulx, uly, lrx, lry),
+            xRes=pix_resx,
+            yRes=pix_resy,
+        )
         geotransform = None
+
 
 class Reader:
     """Read mesh vertices and scanner positions from supported scene files."""
@@ -397,11 +412,13 @@ class Reader:
                    in the ply file
         """
         op = plyfile.PlyData.read(ply_file)
-        points = np.column_stack((
-            op["vertex"]["x"],
-            op["vertex"]["y"],
-            op["vertex"]["z"],
-        ))
+        points = np.column_stack(
+            (
+                op["vertex"]["x"],
+                op["vertex"]["y"],
+                op["vertex"]["z"],
+            )
+        )
         return points
 
     @staticmethod
@@ -431,7 +448,7 @@ class Reader:
         positions = []
         for line in op:
             nline = line.strip()
-            if nline[:17]=="<platformSettings":
+            if nline[:17] == "<platformSettings":
                 pos = [x[3:-1] for x in nline.split()[1:4]]
                 positions.append(pos)
 
@@ -442,28 +459,31 @@ class Reader:
                 ofname = "/".join(xml_file.split("/")[:-1]) + f"/{oofname}"
             else:
                 ofname = oofname
-            spandid = [f"ScanPos{y:02d}"+",".join(x)+f",{y}\n" for y,x in enumerate(positions)]
+            spandid = [
+                f"ScanPos{y:02d}" + ",".join(x) + f",{y}\n"
+                for y, x in enumerate(positions)
+            ]
             op(ofname, "w").writelines(scandid)
         else:
             return scan_pos
 
 
 def OccpyConfig(
-                self, 
-                root_folder, 
-                laz_folder, 
-                out_folder, 
-                DTM_in, 
-                DSM_in, 
-                voxel_dim, 
-                plot_dim, 
-                scanpos, 
-                lthresh=0,
-                ppiter=10000000,
-                ovox=False, 
-                single_return=False, 
-                is_mobile=False
-               ):
+    self,
+    root_folder,
+    laz_folder,
+    out_folder,
+    DTM_in,
+    DSM_in,
+    voxel_dim,
+    plot_dim,
+    scanpos,
+    lthresh=0,
+    ppiter=10000000,
+    ovox=False,
+    single_return=False,
+    is_mobile=False,
+):
     """
     Create the config file needed to run Occpy
 
@@ -481,7 +501,7 @@ def OccpyConfig(
                     Filepath to the tiff containing the digital surface model for the site
     voxel_dim     : float
                     The size of the voxel to use. When setting this consider the scientific
-                    requirements and computational demands. The smaller the voxel_dim, the 
+                    requirements and computational demands. The smaller the voxel_dim, the
                     greater the number of voxels and corresponding RAM requirements. Currently,
                     only cube voxels are supported.
     plot_dim      : list, float
@@ -500,7 +520,7 @@ def OccpyConfig(
     single_return : bool, default=False
                     Whether the data is single return or multi return
     is_mobile     : bool, default=False
-                    Flag to tell Occpy that the platform moves and therefore has a trajectory  
+                    Flag to tell Occpy that the platform moves and therefore has a trajectory
 
     Returns:
     --------
@@ -508,19 +528,19 @@ def OccpyConfig(
              Configuration dictionary containing the supplied input paths,
              voxel settings, plot dimensions, and processing options.
     """
-    tif_in = {'DTM': DTM_in, 'DSM': DSM_in}
+    tif_in = {"DTM": DTM_in, "DSM": DSM_in}
     config = {
-              "root_folder": root_folder,
-              "laz_in": laz_in,
-              "tif_in": tif_in,
-              "out_dir": out_folder,
-              "vox_dim": voxel_dim,
-              "lower_threshold": lthresh,
-              "points_per_iter": ppiter,
-              "plot_dim": plot_dim,
-              "ScanPos": scanpos,
-              "output_voxels": ovox,
-              "single_return": single_return,
-              "is_mobile": is_mobile
-             }
+        "root_folder": root_folder,
+        "laz_in": laz_in,
+        "tif_in": tif_in,
+        "out_dir": out_folder,
+        "vox_dim": voxel_dim,
+        "lower_threshold": lthresh,
+        "points_per_iter": ppiter,
+        "plot_dim": plot_dim,
+        "ScanPos": scanpos,
+        "output_voxels": ovox,
+        "single_return": single_return,
+        "is_mobile": is_mobile,
+    }
     return config
