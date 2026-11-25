@@ -5,6 +5,39 @@ project's Python dependencies installed. Replace the example paths and
 coordinates with values from your data. The HELIOS examples only create scene
 and survey XML files; they do not launch simulations.
 
+## Voxel leaf area from triangular facets
+
+For repeated voxel calculations, prepare the facets once. The default builds a
+spatial index that can reduce checks across many voxels. Alternatively, use
+`method="scan"` to check cached triangle bounds for each voxel. Both methods
+return the same LAI.
+The best choice depends on the scene; a very large triangle can make the index
+less selective. Preparation copies the facets, so prepare them again if the
+geometry changes.
+
+```python
+import numpy as np
+
+from geometrical_calculations import LAICalculations, PreparedFacets
+
+facets = np.array(
+    [[[-1.0, 0.5, 0.5], [2.0, 0.5, 0.5], [0.5, 2.0, 0.5]]]
+)
+prepared = PreparedFacets(facets)  # or PreparedFacets(facets, method="scan")
+calculator = LAICalculations()
+
+for xmin in (0.0, 1.0):
+    lai = calculator.voxel_lai_from_facets(
+        xmin, xmin + 1.0, 0.0, 1.0, 0.0, 1.0, prepared
+    )
+    print(f"Voxel at x={xmin}: LAI = {lai}")
+```
+
+For a single voxel, `voxel_lai_from_facets` also accepts the `facets` array
+directly. This builds a new index on each call, so reuse `prepared` for multiple
+voxels. Voxel minima are inclusive and maxima exclusive, so a facet lying
+exactly on a shared face is counted only in the voxel on the higher side.
+
 ## HELIOS scene and survey preparation
 
 ### Create a radius-limited scene around one scan position
@@ -352,3 +385,200 @@ print(f"Measured PAI: {measured_pai:.3f}")
 The reduction retains whole connected leaf components while distributing the
 thinning across height bands, so the resulting LAI is an approximation to the
 requested target.
+
+## Building an Eradiate canopy
+
+The following examples use `build_canopy.py`. Set `ERADIATE_PROJECT_DIR` before
+importing that module. The examples below do this in Python and use a trailing
+separator so that mesh paths can be reconstructed when reading the JSON.
+
+### Combine tree meshes and leaf and wood spectra
+
+This builds one canopy instance from two existing meshes. The text files have
+no header: the leaf file has wavelength in nanometres, reflectance and
+transmittance columns; the wood file has wavelength and reflectance columns.
+Replace the example spectra and mesh paths with your own data.
+
+```python
+import os
+from pathlib import Path
+
+import numpy as np
+
+project = Path("data/example_plot").resolve()
+os.environ["ERADIATE_PROJECT_DIR"] = str(project) + os.sep
+
+from build_canopy import Canopy, JsonManipulation
+
+leaf_mesh = project / "meshes" / "tree_leaves.obj"
+wood_mesh = project / "meshes" / "tree_wood.obj"
+leaf_spectrum = np.loadtxt(project / "spectra" / "leaf.txt")
+wood_spectrum = np.loadtxt(project / "spectra" / "wood.txt")
+for mesh in (leaf_mesh, wood_mesh):
+    if not mesh.is_file():
+        raise FileNotFoundError(mesh)
+
+builder = Canopy()
+leaf_reflectance = builder.spectra(leaf_spectrum[:, 0], leaf_spectrum[:, 1])
+leaf_transmittance = builder.spectra(
+    leaf_spectrum[:, 0], leaf_spectrum[:, 2], "transmittance"
+)
+wood_reflectance = builder.spectra(wood_spectrum[:, 0], wood_spectrum[:, 1])
+
+elements = [
+    builder.make_mesh_tree_element(
+        str(leaf_mesh),
+        "tree0",
+        builder.spectra_wrapper(leaf_reflectance, leaf_transmittance),
+    ),
+    builder.make_mesh_tree_element(
+        str(wood_mesh), "tree1", builder.spectra_wrapper(wood_reflectance)
+    ),
+]
+instances = builder.make_instanced_canopy_element(
+    elements, np.array([[0.0, 0.0, 0.0]])
+)
+canopy = builder.create_canopy(size=(20, 20, 20), padding=0, elements=instances)
+
+config_dir = project / "config"
+config_dir.mkdir(parents=True, exist_ok=True)
+JsonManipulation().write_json(canopy, config_dir / "canopy.json")
+print("Wrote", config_dir / "canopy.json")
+```
+
+The mesh geometry is assumed to already be positioned in a common coordinate
+system. The instance position applies an additional translation to both
+components. Choose the canopy size to suit the scene.
+
+### Save illumination, atmosphere and camera settings
+
+This creates separate JSON inputs for a directional light, a simple
+monochromatic atmosphere and a perspective camera with a 550 nm response. It
+also writes a JSON `null` background surface. These settings are illustrative;
+adjust the camera geometry, wavelength and illumination for your experiment.
+
+```python
+import os
+from pathlib import Path
+
+project = Path("data/example_plot").resolve()
+os.environ["ERADIATE_PROJECT_DIR"] = str(project) + os.sep
+
+from build_canopy import Atmosphere, Camera, Illumination, JsonManipulation
+
+config_dir = project / "config"
+config_dir.mkdir(parents=True, exist_ok=True)
+
+Illumination(out_json=str(config_dir / "illumination.json")).directional(
+    zenith=30.0, azimuth=180.0, override_name_change=True
+)
+Atmosphere(out_json=str(config_dir / "atmosphere.json")).simple_atmosphere(
+    mode="mono", override_name_change=True
+)
+Camera(out_json=str(config_dir / "measure.json")).perspective_camera(
+    spp=16,
+    npix=(32, 32),
+    fov=45.0,
+    camloc=(0.0, -30.0, 15.0),
+    tarloc=(0.0, 0.0, 5.0),
+    srf={"type": "multi_delta", "wavelengths": [550.0]},
+    idd="example_camera",
+    override_name_change=True,
+)
+JsonManipulation().write_json(None, config_dir / "background.json")
+print("Wrote scene settings to", config_dir)
+```
+
+`override_name_change=True` keeps the supplied filenames rather than adding
+parameter suffixes. These snippets prepare inputs; they do not run or validate
+an Eradiate experiment.
+
+### Convert a GeoTIFF elevation raster to a terrain mesh
+
+```python
+import os
+from pathlib import Path
+
+project = Path("data/example_plot").resolve()
+os.environ["ERADIATE_PROJECT_DIR"] = str(project) + os.sep
+
+from build_canopy import DEMFromTiff
+
+terrain = project / "terrain" / "elevation.tif"
+output = project / "meshes" / "terrain.ply"
+output.parent.mkdir(parents=True, exist_ok=True)
+
+dem = DEMFromTiff(str(terrain), resolution=1, outfile=str(output))
+print("Wrote", dem.outfile)
+```
+
+Use a single-band elevation raster with valid elevations and square 1 m pixels,
+or change `resolution` to match. The mesh is centred on the raster and uses
+the supplied resolution; the GeoTIFF's georeferencing and NoData mask are not
+applied. This example creates a mesh but does not add it to the canopy above.
+
+## Running a prepared Eradiate scene
+
+The commands below illustrate the current runner interface, but **are not yet
+verified end to end**. In the current implementation the requested result
+filename is ignored, and the single-dataset result branch references
+attributes that are not initialized by `RunSimulations`. A simulation reaching
+that branch will fail when saving. Correct these issues and validate against
+your Eradiate inputs before using these commands for production runs.
+
+### Run a scene from the command line
+
+From the repository root, with the Eradiate environment activated and the five
+JSON files prepared:
+
+```bash
+project="$(cd data/example_plot && pwd)/"
+python run_simulation.py \
+    "$project/config/canopy.json" \
+    "$project/config/background.json" \
+    "$project/config/atmosphere.json" \
+    "$project/config/illumination.json" \
+    "$project/config/measure.json" \
+    requested_result.nc \
+    "$project"
+```
+
+The trailing slash on `project` is currently needed when JSON mesh paths are
+decoded. Despite the `requested_result.nc` argument, the runner currently
+generates the output name from the input basenames. For these inputs it would
+use `canopy__illumination__background__atmosphere__measure.nc` in the working
+directory, if the simulation reaches the output-writing step successfully.
+Use unique input names and a dedicated working directory to avoid collisions.
+
+### Submit the same scene with SLURM
+
+Save the following as `run_example.slurm`, adjust the resources and environment
+activation to your cluster, and submit it from the repository root with
+`sbatch run_example.slurm`. Submission consumes cluster resources.
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=canopy-demo
+#SBATCH --time=01:00:00
+#SBATCH --mem=8G
+#SBATCH --ntasks=1
+#SBATCH --output=canopy-demo-%j.log
+
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+# Activate the Eradiate environment here using your cluster's instructions.
+project="$(cd data/example_plot && pwd)/"
+
+python run_simulation.py \
+    "$project/config/canopy.json" \
+    "$project/config/background.json" \
+    "$project/config/atmosphere.json" \
+    "$project/config/illumination.json" \
+    "$project/config/measure.json" \
+    requested_result.nc \
+    "$project"
+```
+
+The same runner limitations and generated output filename apply. This direct
+script avoids the current `slurm_output` helper, which passes the atmosphere
+and canopy arguments in the wrong order.

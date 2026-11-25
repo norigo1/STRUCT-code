@@ -25,6 +25,60 @@ def polygon_area_3d(vertices):
     return 0.5 * np.linalg.norm(normal_vector)
 
 
+class PreparedFacets:
+    """Cache triangle bounds, optionally with a spatial index, for voxel queries."""
+
+    def __init__(self, facets, method="index"):
+        """
+        Prepare a snapshot of triangular facets for repeated voxel calculations.
+
+        Parameters:
+        -----------
+        facets : np.ndarray
+                 Triangle coordinates with shape (n, 3, 3).
+        method : str, default="index"
+                 "scan" checks all cached bounds; "index" builds a SciPy
+                 spatial index, which can be reused across many voxels.
+        """
+        if method not in ("scan", "index"):
+            raise ValueError("method must be 'scan' or 'index'")
+        self.facets = np.array(facets, dtype=float, copy=True)
+        if self.facets.ndim != 3 or self.facets.shape[1:] != (3, 3):
+            raise ValueError("facets must have shape (n, 3, 3)")
+        if not np.all(np.isfinite(self.facets)):
+            raise ValueError("facets must contain finite coordinates")
+        self.facets.setflags(write=False)
+        self.minimum = self.facets.min(axis=1)
+        self.maximum = self.facets.max(axis=1)
+        self.minimum.setflags(write=False)
+        self.maximum.setflags(write=False)
+        self.tree = None
+        if method == "index":
+            from scipy.spatial import cKDTree
+
+            centers = self.minimum + (self.maximum - self.minimum) / 2
+            half_sizes = (self.maximum - self.minimum) / 2
+            self.max_radius = np.max(np.linalg.norm(half_sizes, axis=1), initial=0.0)
+            self.tree = cKDTree(centers)
+
+    def candidate_indices(self, lower, upper):
+        """Return triangles whose bounding boxes overlap the half-open voxel."""
+        if self.tree is None:
+            indices = np.arange(len(self.facets))
+        else:
+            center = lower + (upper - lower) / 2
+            radius = np.linalg.norm((upper - lower) / 2) + self.max_radius
+            indices = np.asarray(
+                self.tree.query_ball_point(center, np.nextafter(radius, np.inf)),
+                dtype=int,
+            )
+            indices.sort()
+        overlap = np.all(
+            (self.maximum[indices] >= lower) & (self.minimum[indices] < upper), axis=1
+        )
+        return indices[overlap]
+
+
 class LAICalculations:
     """Calculate polygon areas and voxel-clipped leaf area index."""
 
@@ -40,27 +94,30 @@ class LAICalculations:
                      Voxel bounds along the y axis.
         zmin, zmax : float
                      Voxel bounds along the z axis.
-        facets : np.ndarray, float
-                 n x m x 3 array of polygon vertices; this implementation assumes
-                 triangular facets.
+        facets : np.ndarray or PreparedFacets
+                 Triangle coordinates with shape (n, 3, 3), or a prepared
+                 snapshot reused across voxels. Passing an array builds a
+                 new spatial index on each call.
+                 Voxel minima are inclusive and maxima exclusive.
 
         Returns:
         --------
         voxel_lai : float
                     Leaf area inside the voxel divided by its horizontal ground area.
         """
-        in_voxel = (
-            (facets[:, :, 0] >= xmin)
-            & (facets[:, :, 0] < xmax)
-            & (facets[:, :, 1] >= ymin)
-            & (facets[:, :, 1] < ymax)
-            & (facets[:, :, 2] >= zmin)
-            & (facets[:, :, 2] < zmax)
+        lower = np.array([xmin, ymin, zmin], dtype=float)
+        upper = np.array([xmax, ymax, zmax], dtype=float)
+        if not np.all(np.isfinite(lower)) or not np.all(np.isfinite(upper)):
+            raise ValueError("voxel bounds must be finite")
+        if np.any(lower >= upper):
+            raise ValueError("each voxel maximum must exceed its minimum")
+        prepared = (
+            facets if isinstance(facets, PreparedFacets) else PreparedFacets(facets)
         )
-
-        sum_in = np.sum(in_voxel, axis=1)
-        rel_facets = facets[sum_in > 0, :, :]
-        sum_inn = sum_in[sum_in > 0]
+        indices = prepared.candidate_indices(lower, upper)
+        rel_facets = prepared.facets[indices]
+        in_voxel = np.all((rel_facets >= lower) & (rel_facets < upper), axis=2)
+        sum_inn = np.sum(in_voxel, axis=1)
 
         a = time.time()
         areas_allin = np.sum(
@@ -69,45 +126,49 @@ class LAICalculations:
         b = time.time()
         print(float(b - a) / 60.0, np.sum(sum_inn == 3))
 
-        norms, pts = self.get_voxel_normals(xmin, xmax, ymin, ymax, zmin, zmax)
-
         c = time.time()
         new_areas = []
-        for j, facet in enumerate(rel_facets[sum_inn < 3]):
-            facetmin1 = np.roll(facet, -1, axis=0)
-            ivj = in_voxel[sum_in > 0][sum_inn < 3][j]
-
-            new_verts = []
-            for k, vertex in enumerate(ivj):
-                if vertex and np.roll(ivj, -1)[k]:
-                    new_verts.append(facet[k])
-                else:
-                    if vertex:
-                        new_verts.append(facet[k])
-                    for i, norm in enumerate(norms):
-                        ip = self.intersect_segment_voxel_plane(
-                            facet[k],
-                            facetmin1[k],
-                            pts[i, :-1],
-                            norm,
-                            xmin,
-                            xmax,
-                            ymin,
-                            ymax,
-                            zmin,
-                            zmax,
-                        )
-                        if ip is not None:
-                            new_verts.append(ip)
-
-            new_vert = np.array(new_verts)
-            new_areas.append(self.polygon_area_3d(new_vert))
+        for facet in rel_facets[sum_inn < 3]:
+            clipped = self._clip_facet_to_voxel(facet, lower, upper)
+            if len(clipped) >= 3:
+                new_areas.append(self.polygon_area_3d(clipped))
 
         d = time.time()
         print(float(d - c) / 60.0, np.sum(sum_inn < 3))
         total_la = np.sum(areas_allin) + np.sum(new_areas)
         ground_a = (xmax - xmin) * (ymax - ymin)
         return total_la / ground_a
+
+    @staticmethod
+    def _clip_facet_to_voxel(facet, lower, upper):
+        """Clip an ordered polygon against the six axis-aligned voxel planes."""
+        vertices = list(facet)
+        for axis in range(3):
+            for bound, keep_above in ((lower[axis], True), (upper[axis], False)):
+                if not vertices:
+                    return np.empty((0, 3))
+                clipped = []
+                previous = vertices[-1]
+                previous_inside = (
+                    previous[axis] >= bound if keep_above else previous[axis] <= bound
+                )
+                for current in vertices:
+                    current_inside = (
+                        current[axis] >= bound
+                        if keep_above
+                        else current[axis] <= bound
+                    )
+                    if previous_inside != current_inside:
+                        fraction = (bound - previous[axis]) / (
+                            current[axis] - previous[axis]
+                        )
+                        clipped.append(previous + fraction * (current - previous))
+                    if current_inside:
+                        clipped.append(current)
+                    previous = current
+                    previous_inside = current_inside
+                vertices = clipped
+        return np.asarray(vertices).reshape(-1, 3)
 
     @staticmethod
     def get_voxel_normals(xmin, xmax, ymin, ymax, zmin, zmax):
@@ -126,7 +187,8 @@ class LAICalculations:
         Returns:
         --------
         normals : np.ndarray, float
-                  Face normal vectors used by the clipping calculation.
+                  Unit normal for each face, shape (6, 3). The direction follows
+                  the vertex ordering and is not necessarily outward.
         points : np.ndarray, float
                  Corner coordinates for the six voxel faces.
         """
@@ -171,10 +233,10 @@ class LAICalculations:
             ]
         )
 
-        v1 = points[:-1, 1] - points[:-1, 0]
-        v2 = points[:-1, 2] - points[:-1, 0]
+        v1 = points[:, 1] - points[:, 0]
+        v2 = points[:, 2] - points[:, 0]
         cp = np.cross(v1, v2)
-        ncp = cp / np.linalg.norm(cp, axis=0)
+        ncp = cp / np.linalg.norm(cp, axis=1, keepdims=True)
         return ncp, points
 
     @staticmethod
@@ -201,6 +263,8 @@ class LAICalculations:
         """
         V = B - A
         denominator = np.dot(V, N)
+        if denominator == 0:
+            return None
         t = np.dot(P0 - A, N) / denominator
         point = A + t * V
         if (

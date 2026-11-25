@@ -291,6 +291,73 @@ class SceneMeshTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 calculator.calculate_area_index(ymin=0, ymax=1, **kwargs)
 
+    def test_area_index_rejects_empty_reversed_and_nonfinite_boundaries(self):
+        calculator = lai_module.CalculateVegAreaIndex(str(self.scene_path))
+        cases = [
+            {"xmin": 0, "xmax": 0, "ymin": 0, "ymax": 1},
+            {"xmin": 0, "xmax": 1, "ymin": 1, "ymax": 0},
+            {"xmin": 0, "xmax": np.inf, "ymin": 0, "ymax": 1},
+            {"xmin": 0, "xmax": 1, "ymin": 0, "ymax": 1, "zmin": 1, "zmax": 1},
+            {"xmin": 0, "xmax": 1, "ymin": 0, "ymax": 1, "type": "unknown"},
+        ]
+        for options in cases:
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                calculator.calculate_area_index(**options)
+
+    def test_leaf_reduction_validates_targets_and_height_bins(self):
+        for target in (-1, np.nan, np.inf, 3):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                lai_module.LeafAreaIndexNewScene(
+                    str(self.scene_path), new_lai=target, orig_lai=2
+                )
+        for bins in (0, -1, 1.5):
+            with self.subTest(bins=bins), self.assertRaises(ValueError):
+                lai_module.LeafAreaIndexNewScene(
+                    str(self.scene_path), new_lai=1, orig_lai=2, height_bins=bins
+                )
+        for target, fraction in ((0, 0), (2, 1)):
+            with self.subTest(target=target):
+                reducer = lai_module.LeafAreaIndexNewScene(
+                    str(self.scene_path), new_lai=target, orig_lai=2
+                )
+                self.assertEqual(reducer.retained_fraction, fraction)
+
+    def test_projection_and_line_segment_boundary_cases(self):
+        gap = lai_module.GapFraction(str(self.scene_path))
+        projected = gap.reproject_vertices(
+            np.array([[0.0, 1.0, 2.0], [4.0, 3.0, -1.0]]),
+            np.array([2.0, 0.0, 0.0]),
+            np.array([2.0, 0.0, 0.0]),
+        )
+        np.testing.assert_allclose(projected, [[2, 1, 2], [2, 3, -1]])
+        canopy = lai_module.CanopyCover(str(self.scene_path))
+        cases = [
+            ((1, 0, 1), (0, 0), (2, 0), (1, 0)),
+            ((1, 0, 1), (1, 0), (2, 0), (1, 0)),
+            ((1, 0, 3), (0, 0), (2, 0), None),
+            ((0, 1, 1), (0, 0), (2, 0), None),
+            ((0, 1, 0), (0, 0), (2, 0), (0, 0)),
+        ]
+        for line, start, end, expected in cases:
+            with self.subTest(line=line, start=start, end=end):
+                result = canopy.line_segment_intersection(line, start, end)
+                if expected is None:
+                    self.assertIsNone(result)
+                else:
+                    np.testing.assert_allclose(result, expected)
+
+    @unittest.skipUnless(REAL_GEOMETRY_AVAILABLE, "requires Shapely and SciPy")
+    def test_crown_area_union_does_not_double_count_overlapping_faces(self):
+        canopy = lai_module.CanopyCover(str(self.scene_path))
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        area, _ = canopy.calculate_crown_area_with_gaps(
+            vertices, [[1, 2, 3], [1, 2, 3]]
+        )
+        self.assertAlmostEqual(area, 0.5)
+        empty, contour = canopy.calculate_crown_area_fill_gaps(vertices, [])
+        self.assertEqual(empty, 0)
+        self.assertEqual(contour.shape, (0, 2))
+
     def test_mesh_summary_skips_unrelated_meshes_and_reuses_total(self):
         """Create a small per-mesh summary and reopen only partially overlapping meshes."""
         other = self.root / "other_leaves.ply"

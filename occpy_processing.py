@@ -10,6 +10,7 @@
 """Prepare mesh-derived rasters and run or inspect Occpy voxel outputs."""
 
 import glob
+import os
 
 import numpy as np
 import occpy
@@ -196,12 +197,13 @@ class RunOccpy:
         Return:
         -------
         mins : np.arr, float
-               n x 3 array of the maximums of the classified voxel coordinates
+               n x 3 array of the minimums of the classified voxel coordinates
         maxs : np.arr, float
                n x 3 array of the maximums of the classified voxel coordinates
         """
+        classif = self.Classification_norm
         xinds, yinds, zinds = np.where(classif == num)
-        vmin_coords, vmax_coords = self.get_voxel_coordinates()
+        vmin_coords, vmax_coords = self.get_voxel_coords()
 
         mins = np.column_stack(
             (
@@ -281,7 +283,7 @@ class ModelBoundaries:
             np.linspace(ymin, ymax, int(npix) + 1),
         )
         grid_z1 = scipy.interpolate.griddata(
-            op[:, :2], op[:, 2], (gridx, gridy), method="linear"
+            terrain_points[:, :2], terrain_points[:, 2], (gridx, gridy), method="linear"
         )
         im = Image.from_array(grid_z1)
         im.save(fout)
@@ -362,7 +364,7 @@ class ModelBoundaries:
         """
         ds = gdal.Open(fname, gdal.GA_Updates)
         fname_spl = fname.split(".")
-        fname_dst = "".join(fpath_spl[:-1]) + "_gtform." + fpath_spl[-1]
+        fname_dst = "".join(fname_spl[:-1]) + "_gtform." + fname_spl[-1]
         geotransform = gdal.Translate(
             fname_dst,
             fname,
@@ -454,16 +456,19 @@ class Reader:
 
         scan_pos = np.array(positions).astype(float)
         if write_to_scanpos:
+            header = "#Name,X,Y,Z,ID\n"
             oofname = "ScanPositions.txt"
             if "/" in xml_file:
                 ofname = "/".join(xml_file.split("/")[:-1]) + f"/{oofname}"
             else:
                 ofname = oofname
-            spandid = [
-                f"ScanPos{y:02d}" + ",".join(x) + f",{y}\n"
+            scandid = [
+                f"ScanPos{y:02d}," + ",".join(x) + f",{y}\n"
                 for y, x in enumerate(positions)
             ]
-            op(ofname, "w").writelines(scandid)
+            with open(ofname, "w", encoding="utf-8") as op:
+                op.write(header)
+                op.writelines(scandid)
         else:
             return scan_pos
 
@@ -531,7 +536,7 @@ def OccpyConfig(
     tif_in = {"DTM": DTM_in, "DSM": DSM_in}
     config = {
         "root_folder": root_folder,
-        "laz_in": laz_in,
+        "laz_in": laz_folder,
         "tif_in": tif_in,
         "out_dir": out_folder,
         "vox_dim": voxel_dim,

@@ -35,9 +35,6 @@ parser.add_argument(
     "measure", type=str, help="File containing the measure information - json format"
 )
 parser.add_argument(
-    "results_fname", type=str, help="String giving the name of the results file"
-)
-parser.add_argument(
     "project_dir",
     type=str,
     help=(
@@ -53,7 +50,6 @@ background_surface = options.background_surface
 atmosphere = options.atmosphere
 illumination = options.illumination
 measure = options.measure
-results_fname = options.results_fname
 project_dir = options.project_dir
 
 

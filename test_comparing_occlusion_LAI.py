@@ -1,7 +1,6 @@
-"""Unit tests for occlusion-profile and voxel LAI helpers."""
+"""Unit tests for occlusion-profile and point-cloud helpers."""
 
-import contextlib
-import io
+import json
 import pathlib
 import struct
 import sys
@@ -19,7 +18,7 @@ import comparing_occlusion_LAI as occlusion_lai
 
 
 class OcclusionAnalysisTests(unittest.TestCase):
-    """Unit tests for scene-path reading, vertical profiles, and voxel LAI."""
+    """Unit tests for scene-path reading and vertical profiles."""
 
     def test_scene_parameters_reads_mesh_paths_and_leaf_facets(self):
         """Read leaf and wood OBJ paths and return leaf face coordinates."""
@@ -72,17 +71,52 @@ class OcclusionAnalysisTests(unittest.TestCase):
         np.testing.assert_allclose(percent, [[0.5, 25.0], [1.5, 50.0]])
         np.testing.assert_allclose(absolute, [[0.5, 1], [1.5, 2]])
 
-    def test_polygon_area_and_voxel_lai_for_contained_triangle(self):
-        """Check polygon area and LAI for a triangle fully inside one voxel."""
-        triangle = np.array([[0.1, 0.1, 0.5], [0.8, 0.1, 0.5], [0.1, 0.8, 0.5]])
-        calculator = occlusion_lai.LAICalculations()
-
-        self.assertAlmostEqual(calculator.polygon_area_3d(triangle), 0.245)
-        with contextlib.redirect_stdout(io.StringIO()):
-            lai = calculator.voxel_lai_from_facets(
-                0, 1, 0, 1, 0, 1, triangle[np.newaxis, :, :]
+    def test_occpy_analysis_loads_saved_grids_and_reports_missing_grid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            grids = root / "merged_voxgrids"
+            grids.mkdir()
+            for index, name in enumerate(
+                ("Nhit_norm", "Nmiss_norm", "Nocc_norm", "Classification_norm")
+            ):
+                np.save(grids / f"{name}.npy", np.full((1, 1, 1), index + 1))
+            config = json.dumps(
+                {
+                    "out_dir": str(root) + "/",
+                    "plot_dim": [0, 0, 0, 1, 1, 1],
+                    "vox_dim": 1,
+                }
             )
-        self.assertAlmostEqual(lai, 0.245)
+            analysis = occlusion_lai.OccpyAnalysis(config)
+            np.testing.assert_array_equal(analysis.Nhit_norm, [[[1]]])
+            np.testing.assert_allclose(
+                analysis.get_unobserved_vertical_profile(), [[0.5, 100]]
+            )
+            (grids / "Nocc_norm.npy").unlink()
+            with self.assertRaises(FileNotFoundError):
+                occlusion_lai.OccpyAnalysis(config)
+
+    def test_all_classification_profiles_and_invalid_output_type(self):
+        analysis = occlusion_lai.OccpyAnalysis.__new__(occlusion_lai.OccpyAnalysis)
+        analysis.oconfig = {"plot_dim": [0, 0, 1, 2, 2, 3], "vox_dim": 1}
+        analysis.Classification_norm = np.array([[[1, 2], [3, 4]], [[2, 2], [4, 1]]])
+        cases = [
+            (analysis.get_hit_vertical_profile, [1, 1]),
+            (analysis.get_empty_vertical_profile, [1, 2]),
+            (analysis.get_occluded_vertical_profile, [1, 0]),
+            (analysis.get_unobserved_vertical_profile, [1, 1]),
+        ]
+        for get_profile, counts in cases:
+            with self.subTest(profile=get_profile.__name__):
+                np.testing.assert_allclose(
+                    get_profile("absolute"), np.column_stack(([1.5, 2.5], counts))
+                )
+                np.testing.assert_allclose(
+                    get_profile("percent"),
+                    np.column_stack(([1.5, 2.5], np.asarray(counts) * 25)),
+                )
+                with self.assertRaisesRegex(IOError, "recognised option"):
+                    get_profile("invalid")
 
     def test_read_obj_expands_face_indices_to_vertex_coordinates(self):
         """Verify OBJ faces are expanded into their 3D vertex coordinates."""

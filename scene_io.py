@@ -119,7 +119,8 @@ class SceneReader:
         filepaths : list of str
                     Asset paths in the same order as their XML parameters.
         """
-        xml_tree = minidom.parse(self.scene_path)
+        with open(self.scene_path, "r", encoding="utf-8") as op:
+            xml_tree = minidom.parse(op)
         filepaths = []
         for param in xml_tree.getElementsByTagName("param"):
             if param.attributes["key"].value == "filepath":
@@ -245,8 +246,17 @@ class SceneReader:
                 vertl.append(np.asarray(vertices))
                 facel.append(np.asarray(faces))
 
+        if len(facel) == 2:
+            faceo = np.vstack((facel[0], facel[1] + len(vertl[0])))
+        elif len(facel) == 1:
+            faceo = facel[0]
+        elif len(facel) == 0:
+            faceo = np.empty((0, 3), dtype=int)
+        else:
+            raise ValueError(
+                f"Expected 0, 1, or 2 mesh files, but found {len(facel)} matching {globstring} in {directories}"
+            )
         verto = np.vstack(vertl)
-        faceo = np.vstack((facel[0], facel[1] + len(vertl[0])))
         return verto, faceo
 
 

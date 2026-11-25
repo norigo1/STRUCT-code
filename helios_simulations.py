@@ -198,9 +198,9 @@ def generate_radius_scenes_from_csv(
     outdir = str(Path(outdir))
     Path(outdir).mkdir(parents=True, exist_ok=True)
 
-    for row in df.itertuples(index=False):
-        scan_name = str(getattr(row, "#Name"))
-        scan_pos = (float(row.X), float(row.Y))
+    for name, x, y in df[["#Name", "X", "Y"]].itertuples(index=False, name=None):
+        scan_name = str(name)
+        scan_pos = (float(x), float(y))
         scene_name = f"{prefix}_{scan_name.replace(' ', '_')}"
         scene_path = str(Path(outdir) / f"{scene_name}.xml")
         if include_terrain:

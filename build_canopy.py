@@ -81,23 +81,23 @@ class Illumination:
                                to the json filename, e.g. test.json -> test_zen_az.json
         """
         if self.angle_units == ureg.radians:
-            if zenith >= 0 or zenith <= np.pi:
+            if zenith >= 0 and zenith <= np.pi:
                 pass
             else:
-                IOError("zenith must be in the range of 0-pi")
-            if azimuth >= 0 or azimuth <= 2 * np.pi:
+                raise IOError("zenith must be in the range of 0-pi")
+            if azimuth >= 0 and azimuth <= 2 * np.pi:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-2*pi")
+                raise IOError("azimuth must be in the range of 0-2*pi")
         else:
-            if zenith >= 0 or zenith <= 180:
+            if zenith >= 0 and zenith <= 180:
                 pass
             else:
-                IOError("zenith must be in the range of 0-180")
-            if azimuth >= 0 or azimuth <= 360:
+                raise IOError("zenith must be in the range of 0-180")
+            if azimuth >= 0 and azimuth <= 360:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-360")
+                raise IOError("azimuth must be in the range of 0-360")
 
         illum = {
             "type": "directional",
@@ -162,23 +162,23 @@ class Illumination:
                                to the json filename, e.g. test.json -> test_zen_az.json
         """
         if self.angle_units == ureg.radians:
-            if zenith >= 0 or zenith <= np.pi:
+            if zenith >= 0 and zenith <= np.pi:
                 pass
             else:
-                IOError("zenith must be in the range of 0-pi")
-            if azimuth >= 0 or azimuth <= 2 * np.pi:
+                raise IOError("zenith must be in the range of 0-pi")
+            if azimuth >= 0 and azimuth <= 2 * np.pi:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-2*pi")
+                raise IOError("azimuth must be in the range of 0-2*pi")
         else:
-            if zenith >= 0 or zenith <= 180:
+            if zenith >= 0 and zenith <= 180:
                 pass
             else:
-                IOError("zenith must be in the range of 0-180")
-            if azimuth >= 0 or azimuth <= 360:
+                raise IOError("zenith must be in the range of 0-180")
+            if azimuth >= 0 and azimuth <= 360:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-360")
+                raise IOError("azimuth must be in the range of 0-360")
 
         illum = {
             "type": "astroobject",
@@ -221,25 +221,26 @@ class Illumination:
                                to the json filename, e.g. test.json -> test_zen_az.json
         """
         if self.angle_units == ureg.radians:
-            if zenith >= 0 or zenith <= np.pi:
+            if zenith >= 0 and zenith <= np.pi:
                 pass
             else:
-                IOError("zenith must be in the range of 0-pi")
-            if azimuth >= 0 or azimuth <= 2 * np.pi:
+                raise IOError("zenith must be in the range of 0-pi")
+            if azimuth >= 0 and azimuth <= 2 * np.pi:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-2*pi")
+                raise IOError("azimuth must be in the range of 0-2*pi")
             sun_fov = np.deg2rad(0.5385)
         else:
-            if zenith >= 0 or zenith <= 180:
+            if zenith >= 0 and zenith <= 180:
                 pass
             else:
-                IOError("zenith must be in the range of 0-180")
-            if azimuth >= 0 or azimuth <= 360:
+                raise IOError("zenith must be in the range of 0-180")
+            if azimuth >= 0 and azimuth <= 360:
                 pass
             else:
-                IOError("azimuth must be in the range of 0-360")
-        sun_fov = 0.5385
+                raise IOError("azimuth must be in the range of 0-360")
+            sun_fov = 0.5385
+        
         # need to unset and set the filename to avoid writing the file twice
         out_json = self.out_json
         self.out_json = None
@@ -682,9 +683,9 @@ class Camera:
         npixels_60m = 1830.0
         if res == "10m":
             reso = npixels_10m
-        elif res == npixels_20m:
+        elif res == "20m":
             reso = npixels_20m
-        elif res == npixels_60m:
+        elif res == "60m":
             reso = npixels_60m
         else:
             raise IOError("'res' should be '10m', '20m' or '60m'")
@@ -737,7 +738,7 @@ class Camera:
             for b in bands:
                 if b in s2bands:
                     bandss.append(srf_loc + sensor_id + b)
-                    bandids.append(idd1 + idd2.format(bnds=b) + idd3 for b in s2bands)
+                    bandids.append(idd1 + idd2.format(bnds=b) + idd3)
                 else:
                     raise IOError(f"'{b}' is not a recognised {sensor_id} band")
 
@@ -1465,6 +1466,8 @@ class Canopy:
                 )
 
             crefop = np.loadtxt(filename, delimiter=",", dtype=str)
+            if len(crefop.shape) == 1:
+                crefop = np.array([crefop])
 
             def cref(fname, index, sfnames):
                 index = np.where(crefop[:, 0] == fname)[0]
@@ -1744,18 +1747,18 @@ class RunSimulations:
         log_head = self.get_logfile_header()
 
         if type(result) != dict:
-            result.attrs["atmosphere"] = self.atmosphere
-            result.attrs["canopy"] = self.canopy
-            result.attrs["background_surface"] = self.background_surface
-            result.attrs["illumination"] = self.illumination
-            result.attrs["measure"] = self.measure
+            result.attrs["atmosphere"] = atmosphere
+            result.attrs["canopy"] = canopy
+            result.attrs["background_surface"] = background_surface
+            result.attrs["illumination"] = illumination
+            result.attrs["measure"] = measure
 
-            result.attrs["user"] = self.usr
-            result.attrs["date_time"] = self.time
-            result.attrs["eradiate_version"] = self.eradiate_version
-            result.attrs["branch"] = self.branch
-            result.attrs["commit"] = self.commit
-            result.attrs["git_url"] = self.git_url
+            result.attrs["user"] = log_head[0]
+            result.attrs["date_time"] = log_head[1]
+            result.attrs["eradiate_version"] = log_head[2]
+            result.attrs["branch"] = log_head[3]
+            result.attrs["commit"] = log_head[4]
+            result.attrs["git_url"] = log_head[5]
             result.to_netcdf(result_fname)
         else:
             bnames = [x["srf"].attrs["band"] for x in measu]
