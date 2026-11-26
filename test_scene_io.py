@@ -95,6 +95,44 @@ class SceneIOTests(unittest.TestCase):
         self.assertEqual(vertices.shape, (3, 3))
         np.testing.assert_array_equal(faces, [[1, 2, 3]])
 
+    def test_read_tree_accepts_path_directory(self):
+        mesh = self.root / "tree.obj"
+        mesh.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+
+        vertices, faces = self.reader.read_tree([self.root], "*.obj")
+
+        np.testing.assert_array_equal(vertices, [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        np.testing.assert_array_equal(faces, [[1, 2, 3]])
+
+    def test_read_tree_offsets_faces_when_combining_meshes(self):
+        first = self.root / "first"
+        second = self.root / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "tree.obj").write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 4 2 1\n",
+            encoding="utf-8",
+        )
+        (second / "tree.obj").write_text(
+            "v 0 0 1\nv 1 0 1\nv 0 1 1\nf 3 1 2\n", encoding="utf-8"
+        )
+
+        vertices, faces = self.reader.read_tree([str(first), str(second)], "*.obj")
+
+        np.testing.assert_array_equal(
+            vertices,
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [1, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [0, 1, 1],
+            ],
+        )
+        np.testing.assert_array_equal(faces, [[4, 2, 1], [7, 5, 6]])
+
 
 if __name__ == "__main__":
     unittest.main()

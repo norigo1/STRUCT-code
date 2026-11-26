@@ -194,7 +194,7 @@ class GeometricalCalculationsTests(unittest.TestCase):
                     )
                     self.assertAlmostEqual(lai, np.sqrt(2))
 
-    def test_voxel_face_facets_belong_to_only_the_lower_inclusive_voxel(self):
+    def test_facet_on_upper_voxel_boundary_is_excluded_and_counted_in_next_voxel(self):
         triangle = np.array([[[0.1, 0.1, 1], [0.8, 0.1, 1], [0.1, 0.8, 1]]])
         calculator = LAICalculations()
         for method in ("scan", "index"):

@@ -104,10 +104,7 @@ class RunOccpy:
         maxy = miny + self.config["vox_dim"]
         maxz = minz + self.config["vox_dim"]
 
-        mins = np.column_stack((minx, miny, minz))
-        maxs = np.column_stack((maxx, maxy, maxz))
-
-        return mins, maxs
+        return minx, maxx, miny, maxy, minz, maxz
 
     def get_occluded_voxels(self):
         """
@@ -203,20 +200,22 @@ class RunOccpy:
         """
         classif = self.Classification_norm
         xinds, yinds, zinds = np.where(classif == num)
-        vmin_coords, vmax_coords = self.get_voxel_coords()
+        (xmin_coords, xmax_coords, 
+         ymin_coords, ymax_coords, 
+         zmin_coords, zmax_coords) = self.get_voxel_coords()
 
         mins = np.column_stack(
             (
-                vmin_coords[:, 0][xinds],
-                vmin_coords[:, 1][yinds],
-                vmin_coords[:, 2][zinds],
+                xmin_coords[xinds],
+                ymin_coords[yinds],
+                zmin_coords[zinds],
             )
         )
         maxs = np.column_stack(
             (
-                vmax_coords[:, 0][xinds],
-                vmax_coords[:, 1][yinds],
-                vmax_coords[:, 2][zinds],
+                xmax_coords[xinds],
+                ymax_coords[yinds],
+                zmax_coords[zinds],
             )
         )
         return mins, maxs

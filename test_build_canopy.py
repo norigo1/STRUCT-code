@@ -1,5 +1,6 @@
 """Unit tests for canopy scene and Eradiate output helpers."""
 
+import itertools
 import os
 import pathlib
 import tempfile
@@ -226,9 +227,28 @@ class SceneConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(IOError, "angle_units"):
             bc.Illumination(angle_units=bc.ureg.m)
 
-    def test_illumination_rejects_out_of_range_zenith(self):
-        with self.assertRaises(IOError):
-            bc.Illumination().directional(-1, 0)
+    def test_illumination_accepts_and_rejects_angles_at_each_boundary(self):
+        limits = {
+            bc.ureg.degrees: (180, 360),
+            bc.ureg.radians: (np.pi, 2 * np.pi),
+        }
+        for units, (max_zenith, max_azimuth) in limits.items():
+            illumination = bc.Illumination(angle_units=units)
+            for zenith, azimuth in ((0, 0), (max_zenith, max_azimuth)):
+                with self.subTest(units=str(units), angles=(zenith, azimuth)):
+                    light = illumination.directional(zenith, azimuth)
+                    self.assertEqual(light["zenith"], zenith * units)
+                    self.assertEqual(light["azimuth"], azimuth * units)
+            invalid = (
+                (-1e-9, 0),
+                (max_zenith + 1e-9, 0),
+                (0, -1e-9),
+                (0, max_azimuth + 1e-9),
+            )
+            for zenith, azimuth in invalid:
+                with self.subTest(units=str(units), invalid=(zenith, azimuth)):
+                    with self.assertRaises(IOError):
+                        illumination.directional(zenith, azimuth)
 
     def test_sun_angular_diameter_is_converted_to_radians(self):
         light = bc.Illumination(angle_units=bc.ureg.radians).sun(0, 0)
@@ -356,6 +376,11 @@ class SceneConfigurationTests(unittest.TestCase):
 
 
 class SimulationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"ERADIATE_PROJECT_DIR": "/original/"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_all_and_sequential_orders_and_invalid_configuration(self):
         components = (
             ["c1.json", "c2.json"],
@@ -369,10 +394,24 @@ class SimulationTests(unittest.TestCase):
         sequential = bc.RunSimulations(*components, order="sequential")
         self.assertEqual(all_runs.len_sims, 32)
         self.assertEqual(sequential.len_sims, 2)
+        # Each run is ordered (atmosphere, canopy, background, illumination, measure).
         self.assertEqual(
-            sequential.simulations[1][:5],
-            ("a2.json", "c2.json", "b2.json", "i2.json", "m2.json"),
+            [run[:5] for run in sequential.simulations],
+            [
+                ("a1.json", "c1.json", "b1.json", "i1.json", "m1.json"),
+                ("a2.json", "c2.json", "b2.json", "i2.json", "m2.json"),
+            ],
         )
+        expected_all = list(
+            itertools.product(
+                components[2],
+                components[0],
+                components[1],
+                components[3],
+                components[4],
+            )
+        )
+        self.assertEqual([run[:5] for run in all_runs.simulations], expected_all)
         with self.assertRaisesRegex(IOError, "canopies.*project_dirs"):
             bc.RunSimulations(*components[:-1], ["/one"])
         with self.assertRaisesRegex(IOError, "same length"):
@@ -381,6 +420,172 @@ class SimulationTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(IOError, "order"):
             bc.RunSimulations(*components, order="unknown")
+
+    def test_each_run_keeps_its_canopy_project_directory(self):
+        runner = bc.RunSimulations(
+            ["c1.json", "c2.json"],
+            ["b.json"],
+            ["a.json"],
+            ["i.json"],
+            ["m.json"],
+            ["/scene_one", "/scene_two"],
+        )
+        self.assertEqual(
+            [(run[1], run[5]) for run in runner.simulations],
+            [("c1.json", "/scene_one"), ("c2.json", "/scene_two")],
+        )
+
+    def test_project_directory_is_set_while_reading_and_restored(self):
+        runner = bc.RunSimulations(
+            ["c1.json", "c2.json"],
+            ["b.json"],
+            ["a.json"],
+            ["i.json"],
+            ["m.json"],
+            ["/scene_one", "/scene_two"],
+            order="all",
+        )
+        original = os.environ["ERADIATE_PROJECT_DIR"]
+        seen = []
+
+        def read_json(fname):
+            seen.append((fname, os.environ["ERADIATE_PROJECT_DIR"]))
+            return {}
+
+        with (
+            patch.object(runner.jm, "read_json", side_effect=read_json),
+            patch.object(
+                bc.eradiate.experiments,
+                "CanopyAtmosphereExperiment",
+                return_value=object(),
+            ),
+            patch.object(bc.eradiate, "run", return_value=xr.Dataset()),
+            patch.object(runner, "get_logfile_header", return_value=("",) * 6),
+            patch.object(xr.Dataset, "to_netcdf"),
+        ):
+            runner.run_simulation(
+                "a.json", "c1.json", "b.json", "i.json", "m.json", "out", "/scene_one"
+            )
+            self.assertEqual(os.environ["ERADIATE_PROJECT_DIR"], original)
+            runner.run_simulation(
+                "a.json", "c2.json", "b.json", "i.json", "m.json", "out", "/scene_two"
+            )
+            runner.run_simulation(
+                "a.json", "c2.json", "b.json", "i.json", "m.json", "out"
+            )
+        self.assertEqual({d for f, d in seen[:5]}, {"/scene_one"})
+        self.assertEqual({d for f, d in seen[5:10]}, {"/scene_two"})
+        self.assertEqual({d for f, d in seen[10:]}, {original})
+        self.assertEqual(os.environ["ERADIATE_PROJECT_DIR"], original)
+
+    def test_project_directory_is_restored_when_reading_fails(self):
+        runner = bc.RunSimulations(
+            ["c.json"], ["b.json"], ["a.json"], ["i.json"], ["m.json"], ["/scene"]
+        )
+        original = os.environ["ERADIATE_PROJECT_DIR"]
+        with patch.object(runner.jm, "read_json", side_effect=ValueError("bad")):
+            with self.assertRaises(ValueError):
+                runner.run_simulation(
+                    "a.json", "c.json", "b.json", "i.json", "m.json", "out", "/scene"
+                )
+        self.assertEqual(os.environ["ERADIATE_PROJECT_DIR"], original)
+
+    def test_slurm_script_uses_each_runs_project_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = bc.RunSimulations(
+                ["c1.json", "c2.json"],
+                ["b.json"],
+                ["a.json"],
+                ["i.json"],
+                ["m.json"],
+                ["/scene_one", "/scene_two"],
+            )
+            script = pathlib.Path(temp_dir) / "run.sh"
+            runner.slurm_output(str(script), 4, (1, 0, 0), "queue", "")
+            lines = script.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        # Arguments must match run_simulation.py: five json files, then project_dir.
+        commands = [line.split('--wrap="')[1].rstrip('"').split() for line in lines]
+        self.assertEqual(
+            commands[0][1:],
+            ["run_simulation.py", "c1.json", "b.json", "a.json", "i.json", "m.json"]
+            + ["/scene_one"],
+        )
+        self.assertEqual(commands[1][-3:], ["i.json", "m.json", "/scene_two"])
+        self.assertEqual(len(commands[1]), 8)
+
+    def test_results_directory_joins_with_or_without_trailing_separator(self):
+        names = set()
+        for results_dir in ("/results", "/results/", pathlib.Path("/results"), ""):
+            runner = bc.RunSimulations(
+                ["c.json"],
+                ["b.json"],
+                ["a.json"],
+                ["i.json"],
+                ["m.json"],
+                ["/scene"],
+                results_dir=results_dir,
+            )
+            with self.subTest(results_dir=results_dir):
+                path = pathlib.Path(runner.result_fnames[0])
+                self.assertEqual(path.name, "c__i__b__a__m.nc")
+                names.add(str(path.parent))
+        self.assertEqual(names, {"/results", "."})
+
+    def test_slurm_script_passes_results_directory_only_when_set(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = pathlib.Path(temp_dir) / "my results"
+            script = pathlib.Path(temp_dir) / "run.sh"
+            outputs = {}
+            for label, results_dir in (("set", results), ("unset", "")):
+                runner = bc.RunSimulations(
+                    ["c.json"],
+                    ["b.json"],
+                    ["a.json"],
+                    ["i.json"],
+                    ["m.json"],
+                    ["/scene"],
+                    results_dir=results_dir,
+                )
+                runner.slurm_output(str(script), 4, (1, 0, 0), "queue", "")
+                outputs[label] = script.read_text(encoding="utf-8")
+        self.assertIn(f"--results_dir '{results}'", outputs["set"])
+        self.assertIn(f'--output="{results}/c__i__b__a__m_log.log"', outputs["set"])
+        self.assertNotIn("--results_dir", outputs["unset"])
+        self.assertIn('--output="c__i__b__a__m_log.log"', outputs["unset"])
+
+    def test_run_simulation_creates_missing_results_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = pathlib.Path(temp_dir) / "new" / "results"
+            runner = bc.RunSimulations(
+                ["c.json"],
+                ["b.json"],
+                ["a.json"],
+                ["i.json"],
+                ["m.json"],
+                ["/scene"],
+                results_dir=results,
+            )
+            header = ("user", "time", "version", "branch", "commit", "url")
+            with (
+                patch.object(runner.jm, "read_json", return_value={}),
+                patch.object(
+                    bc.eradiate.experiments,
+                    "CanopyAtmosphereExperiment",
+                    return_value=object(),
+                ),
+                patch.object(
+                    bc.eradiate,
+                    "run",
+                    return_value=xr.Dataset({"radiance": ("w", [1.0])}),
+                ),
+                patch.object(runner, "get_logfile_header", return_value=header),
+            ):
+                runner.run_simulations()
+            self.assertTrue(pathlib.Path(runner.result_fnames[0]).is_file())
+            self.assertEqual(
+                pathlib.Path(runner.result_fnames[0]).parent, results
+            )
 
     def test_single_result_is_saved_with_metadata_without_running_eradiate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -458,6 +663,18 @@ class SimulationTests(unittest.TestCase):
 
 
 class OutputTests(unittest.TestCase):
+    def test_project_paths_decode_without_trailing_separator(self):
+        entry = {
+            "__type__": "pathlib.PosixPath",
+            "value": "meshes/leaf.obj",
+            "category": "other",
+        }
+        for project_dir in ("/scene", "/scene/"):
+            with self.subTest(project_dir=project_dir):
+                with patch.dict(os.environ, {"ERADIATE_PROJECT_DIR": project_dir}):
+                    decoded = bc.numpy_object_hook(dict(entry))
+                self.assertEqual(decoded, pathlib.Path("/scene/meshes/leaf.obj"))
+
     def test_json_round_trip_numpy_values_and_quantities(self):
         data = {
             "array": np.array([[1.0, 2.0], [3.0, 4.0]]),

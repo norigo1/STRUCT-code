@@ -112,10 +112,62 @@ class OccpyReaderTests(unittest.TestCase):
             ) as normalize,
         ):
             runner = RunOccpy(config)
-        occpy.return_value.define_sensor_pos.assert_called_once()
-        occpy.return_value.do_raytracing.assert_called_once()
-        self.assertEqual(normalize.call_args.kwargs["dtm_file"], "/project/dtm.tif")
-        np.testing.assert_array_equal(runner.Classification_norm, results[3])
+        occpy.assert_called_once_with(config=config)
+        occpy.return_value.define_sensor_pos.assert_called_once_with(
+            path2file="scan.csv",
+            delimiter=",",
+            hdr_scanpos_id="#Name",
+            hdr_x="X",
+            hdr_y="Y",
+            hdr_z="Z",
+            sens_pos_id_offset=0,
+        )
+        occpy.return_value.do_raytracing.assert_called_once_with()
+        normalize.assert_called_once_with(
+            input_folder="/project/output",
+            PlotDim=[0, 0, 0, 1, 1, 1],
+            vox_dim=1,
+            dtm_file="/project/dtm.tif",
+            dsm_file="/project/dsm.tif",
+            lower_threshold=0,
+            output_voxels=True,
+        )
+        for name, expected in zip(
+            ("Nhit_norm", "Nmiss_norm", "Nocc_norm", "Classification_norm", "chm"),
+            results,
+        ):
+            np.testing.assert_array_equal(getattr(runner, name), expected)
+
+    def test_classified_voxels_return_bounds_for_each_category(self):
+        runner = RunOccpy.__new__(RunOccpy)
+        runner.config = {"plot_dim": [10, -2, 4, 11, -0.5, 6], "vox_dim": 0.5}
+        runner.Classification_norm = np.zeros((2, 3, 4), dtype=int)
+        runner.Classification_norm[0, 1, 3] = 1
+        runner.Classification_norm[1, 2, 0] = 1
+        runner.Classification_norm[1, 0, 2] = 2
+        runner.Classification_norm[0, 2, 1] = 3
+        runner.Classification_norm[1, 1, 3] = 4
+        cases = (
+            (runner.get_hit_voxels, [[10, -1.5, 5.5], [10.5, -1, 4]]),
+            (runner.get_empty_voxels, [[10.5, -2, 5]]),
+            (runner.get_occluded_voxels, [[10, -1, 4.5]]),
+            (runner.get_unobserved_voxels, [[10.5, -1.5, 5.5]]),
+        )
+        for get_voxels, expected_min in cases:
+            with self.subTest(category=get_voxels.__name__):
+                mins, maxs = get_voxels()
+                np.testing.assert_array_equal(mins, expected_min)
+                np.testing.assert_array_equal(maxs, np.asarray(expected_min) + 0.5)
+
+    def test_classified_voxels_return_empty_coordinate_arrays(self):
+        runner = RunOccpy.__new__(RunOccpy)
+        runner.config = {"plot_dim": [0, 0, 0, 1, 1, 1], "vox_dim": 1}
+        runner.Classification_norm = np.zeros((1, 1, 1), dtype=int)
+
+        mins, maxs = runner.get_hit_voxels()
+
+        self.assertEqual(mins.shape, (0, 3))
+        self.assertEqual(maxs.shape, (0, 3))
 
     def test_platform_xml_writes_scan_positions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -143,33 +195,6 @@ class OccpyReaderTests(unittest.TestCase):
                 [[float(row[axis]) for axis in ("X", "Y", "Z")] for row in rows],
                 [[1, 2, 3], [4.5, -2, 6]],
             )
-
-    @unittest.expectedFailure
-    def test_voxel_coordinates_cover_the_full_three_dimensional_grid(self):
-        runner = RunOccpy.__new__(RunOccpy)
-        runner.config = {"plot_dim": [0, 0, 0, 2, 2, 2], "vox_dim": 1}
-        mins, maxs = runner.get_voxel_coords()
-        self.assertEqual(mins.shape, (8, 3))
-        np.testing.assert_array_equal(maxs - mins, np.ones((8, 3)))
-
-    def test_classified_voxel_coordinates_select_matching_cells(self):
-        runner = RunOccpy.__new__(RunOccpy)
-        runner.config = {"plot_dim": [0, 0, 0, 2, 2, 2], "vox_dim": 1}
-        runner.Classification_norm = np.zeros((2, 2, 2), dtype=int)
-        runner.Classification_norm[1, 0, 1] = 3
-        mins, maxs = runner.get_occluded_voxels()
-        np.testing.assert_array_equal(mins, [[1, 0, 1]])
-        np.testing.assert_array_equal(maxs, [[2, 1, 2]])
-
-    @unittest.expectedFailure
-    def test_classified_voxel_coordinates_support_non_cubic_grids(self):
-        runner = RunOccpy.__new__(RunOccpy)
-        runner.config = {"plot_dim": [0, 0, 0, 2, 3, 4], "vox_dim": 1}
-        runner.Classification_norm = np.zeros((2, 3, 4), dtype=int)
-        runner.Classification_norm[1, 2, 3] = 3
-        mins, maxs = runner.get_occluded_voxels()
-        np.testing.assert_array_equal(mins, [[1, 2, 3]])
-        np.testing.assert_array_equal(maxs, [[2, 3, 4]])
 
     def test_config_uses_supplied_laz_folder(self):
         config = OccpyConfig(

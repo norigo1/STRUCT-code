@@ -43,6 +43,16 @@ parser.add_argument(
     ),
 )
 
+parser.add_argument(
+    "--results_dir",
+    type=str,
+    default="",
+    help=(
+        "Directory in which the results are saved (created if missing). Default is"
+        " the current working directory"
+    ),
+)
+
 options = parser.parse_args()
 
 canopy = options.canopy
@@ -51,6 +61,7 @@ atmosphere = options.atmosphere
 illumination = options.illumination
 measure = options.measure
 project_dir = options.project_dir
+results_dir = options.results_dir
 
 
 os.environ["ERADIATE_PROJECT_DIR"] = project_dir
@@ -63,5 +74,6 @@ rs = bc.RunSimulations(
     [illumination],
     [measure],
     [project_dir],
+    results_dir=results_dir,
 )
 rs.run_simulations()

@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import pdb
+import shlex
 import subprocess
 import time
 
@@ -1695,8 +1696,9 @@ class RunSimulations:
 
         # match up the project directory to the scene after organisation
         for j, sim in enumerate(self.simulations):
-            self.simulations[j] += tuple(project_dirs[canopies.index(sim[1])])
+            self.simulations[j] += (project_dirs[canopies.index(sim[1])],)
 
+        self.results_dir = results_dir
         self.result_fnames = self.get_results_fnames(results_dir)
 
     def run_simulation(
@@ -1707,6 +1709,7 @@ class RunSimulations:
         illumination,
         measure,
         result_fname,
+        project_dir=None,
     ):
         """
         Run simulation based on filenames for each component
@@ -1725,12 +1728,26 @@ class RunSimulations:
                              Filename giving the measurement parameters in a json file
         result_fname       : str
                              Filename of the simulation output.
+        project_dir        : str or pathlib.Path, optional
+                             Top level directory of the scene. The json files store paths
+                             relative to this directory, so it is set as
+                             ERADIATE_PROJECT_DIR while they are read and then restored.
+                             If None, the current ERADIATE_PROJECT_DIR is used.
         """
-        atmos = self.jm.read_json(atmosphere)
-        canop = self.jm.read_json(canopy)
-        bgsur = self.jm.read_json(background_surface)
-        illum = self.jm.read_json(illumination)
-        measu = self.jm.read_json(measure)
+        previous_project_dir = os.environ.get("ERADIATE_PROJECT_DIR")
+        if project_dir is not None:
+            os.environ["ERADIATE_PROJECT_DIR"] = str(project_dir)
+        try:
+            atmos = self.jm.read_json(atmosphere)
+            canop = self.jm.read_json(canopy)
+            bgsur = self.jm.read_json(background_surface)
+            illum = self.jm.read_json(illumination)
+            measu = self.jm.read_json(measure)
+        finally:
+            if previous_project_dir is None:
+                os.environ.pop("ERADIATE_PROJECT_DIR", None)
+            else:
+                os.environ["ERADIATE_PROJECT_DIR"] = previous_project_dir
 
         exp = eradiate.experiments.CanopyAtmosphereExperiment(
             surface=bgsur,
@@ -1742,6 +1759,7 @@ class RunSimulations:
 
         if result_fname[-3:] != ".nc":
             result_fname += ".nc"
+        pathlib.Path(result_fname).parent.mkdir(parents=True, exist_ok=True)
 
         result = eradiate.run(exp)
         log_head = self.get_logfile_header()
@@ -1791,6 +1809,7 @@ class RunSimulations:
                 self.simulations[i][3],
                 self.simulations[i][4],
                 self.result_fnames[i],
+                self.simulations[i][5],
             )
 
     def create_python_slurm(
@@ -1800,8 +1819,8 @@ class RunSimulations:
         background_surface,
         illumination,
         measure,
-        res_name,
-        project_dir=os.environ["ERADIATE_PROJECT_DIR"],
+        project_dir=None,
+        results_dir=None,
     ):
         """
         Create the python string to run the simulation (typically to be passed to slurm).
@@ -1820,16 +1839,21 @@ class RunSimulations:
                              Filename for the illumination dictionary
         measure            : str
                              Filename for the measure dictionary
-        res_name           : str
-                             Name of the results file of the simulation
         project_dir        : str, default is the path set in os.environ["ERADIATE_PROJECT_DIR"]
                              Path to the top level directory of the scene (i.e. inside should be
                              the meshes and spectra folders
+        results_dir        : str or pathlib.Path, optional
+                             Directory in which the results are saved. If None, the results
+                             are saved in the directory the simulation is run from.
         """
+        if project_dir is None:
+            project_dir = os.environ["ERADIATE_PROJECT_DIR"]
         python_str = (
             f"python run_simulation.py {canopy} {background_surface} {atmosphere} "
-            f"{illumination} {measure} {res_name} {project_dir}"
+            f"{illumination} {measure} {project_dir}"
         )
+        if results_dir:
+            python_str += f" --results_dir {shlex.quote(str(results_dir))}"
         return python_str
 
     def slurm_output(self, slurm_outfile, ram_gb, time, queue_name, other_args):
@@ -1869,10 +1893,12 @@ class RunSimulations:
                     self.simulations[i][2],
                     self.simulations[i][3],
                     self.simulations[i][4],
-                    self.result_fnames[i],
+                    self.simulations[i][5],
+                    self.results_dir,
                 )
-                job_name = self.result_fnames[i].split("/")[-1][:-3]
-                log_name = self.result_fnames[i][:-3] + "_log.log"
+                result_path = pathlib.Path(self.result_fnames[i])
+                job_name = result_path.stem
+                log_name = str(result_path.with_name(f"{job_name}_log.log"))
                 addi = addi_str.format(
                     log_name=log_name, job_name=job_name, python_str=python_str
                 )
@@ -1929,7 +1955,7 @@ class RunSimulations:
                 f"{self.simulations[i][2][:-5].split('/')[-1]}__{self.simulations[i][0][:-5].split('/')[-1]}__"
                 f"{self.simulations[i][4][:-5].split('/')[-1]}.nc"
             )
-            rfnames.append(results_dir + rfname)
+            rfnames.append(str(pathlib.Path(results_dir) / rfname))
         return rfnames
 
 
@@ -2347,7 +2373,7 @@ def numpy_object_hook(dct):
             am = pathlib.Path(eradiate.asset_manager.install_dir)
             return am / pathlib.PosixPath(dct["value"])
         elif dct["category"] == "other":
-            return pathlib.Path(os.environ["ERADIATE_PROJECT_DIR"] + dct["value"])
+            return pathlib.Path(os.environ["ERADIATE_PROJECT_DIR"]) / dct["value"]
         else:
             raise IOError("I don't know how you got here")
     elif t == "ureg.Quantity":

@@ -234,8 +234,6 @@ class SceneReader:
         vertl = []
         facel = []
         for directory in directories:
-            if directory[-1] != "/":
-                directory += "/"
             for filepath in pathlib.Path(directory).glob(globstring):
                 if filepath.suffix == ".obj":
                     vertices, faces = self.read_obj(str(filepath))
