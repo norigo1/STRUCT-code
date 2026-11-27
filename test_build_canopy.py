@@ -755,6 +755,50 @@ class OutputTests(unittest.TestCase):
                 [[400, 500], [610, np.nan]],
             )
 
+    def test_save_result_writes_single_dataset_and_merges_dict_to_one_file(self):
+        saver = bc.EradiateXarray(usr="someone")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            single = pathlib.Path(temp_dir) / "single.nc"
+            saver.save_result(xr.Dataset({"radiance": ("w", [1.0, 2.0])}), single)
+            with xr.open_dataset(single) as saved:
+                np.testing.assert_allclose(saved["radiance"], [1.0, 2.0])
+                self.assertEqual(saved.attrs["user"], "someone")
+                self.assertNotIn("canopy", saved.attrs)
+
+            multi = pathlib.Path(temp_dir) / "multi.nc"
+            saver.save_result(
+                {"b": _band_dataset([400, 500]), "r": _band_dataset([600])},
+                multi,
+                band_names=["blue", "red"],
+            )
+            with xr.open_dataset(multi) as saved:
+                np.testing.assert_array_equal(saved["band"], ["blue", "red"])
+                self.assertEqual(saved.attrs["user"], "someone")
+
+    def test_create_experiment_saves_multiband_dict_as_one_file(self):
+        measures = [
+            {"srf": xr.DataArray(0, attrs={"band": "blue"})},
+            {"srf": xr.DataArray(0, attrs={"band": "red"})},
+        ]
+        result = {"b": _band_dataset([400, 500]), "r": _band_dataset([600])}
+        header = ("user", "time", "version", "branch", "commit", "url")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = pathlib.Path(temp_dir) / "result.nc"
+            with (
+                patch.object(
+                    bc.eradiate.experiments,
+                    "CanopyAtmosphereExperiment",
+                    return_value=object(),
+                ),
+                patch.object(bc.eradiate, "run", return_value=result),
+                patch.object(bc.RunSimulations, "get_logfile_header", return_value=header),
+            ):
+                bc.CreateExperiment({}, {}, {}, {}, measures, str(output))
+            with xr.open_dataset(output) as saved:
+                np.testing.assert_array_equal(saved["band"], ["blue", "red"])
+                self.assertEqual(saved.attrs["commit"], "commit")
+                self.assertEqual(saved.attrs["git_url"], "url")
+
     def test_merge_rejects_incompatible_bands(self):
         first = _band_dataset([400, 500])
         second = _band_dataset([600]).assign_coords(sza=[45.0])

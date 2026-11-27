@@ -1586,14 +1586,27 @@ class CreateExperiment:
         )
 
         self.result = eradiate.run(exp)
-
         if result_fname != None:
             try:
-                self.result.to_netcdf(result_fname)
+                measures = measure if isinstance(measure, list) else [measure]
+                bnames = (
+                    [x["srf"].attrs["band"] for x in measures]
+                    if isinstance(self.result, dict)
+                    else None
+                )
+                log_head = RunSimulations.get_logfile_header()
+                EradiateXarray(
+                    usr=log_head[0],
+                    time=log_head[1],
+                    eradiate_version=log_head[2],
+                    branch=log_head[3],
+                    commit=log_head[4],
+                    git_url=log_head[5],
+                ).save_result(self.result, result_fname, band_names=bnames)
             except:
                 # sort out the error handling here
                 raise IOError(
-                    f"{outfile} is probably not a valid filename for a netCDF file, "
+                    f"{result_fname} is probably not a valid filename for a netCDF file, "
                     "already exists, or something else"
                 )
 
@@ -1764,38 +1777,23 @@ class RunSimulations:
         result = eradiate.run(exp)
         log_head = self.get_logfile_header()
 
-        if type(result) != dict:
-            result.attrs["atmosphere"] = atmosphere
-            result.attrs["canopy"] = canopy
-            result.attrs["background_surface"] = background_surface
-            result.attrs["illumination"] = illumination
-            result.attrs["measure"] = measure
-
-            result.attrs["user"] = log_head[0]
-            result.attrs["date_time"] = log_head[1]
-            result.attrs["eradiate_version"] = log_head[2]
-            result.attrs["branch"] = log_head[3]
-            result.attrs["commit"] = log_head[4]
-            result.attrs["git_url"] = log_head[5]
-            result.to_netcdf(result_fname)
-        else:
-            bnames = [x["srf"].attrs["band"] for x in measu]
-            ex = EradiateXarray(
-                atmosphere=atmosphere,
-                canopy=canopy,
-                background_surface=background_surface,
-                illumination=illumination,
-                measure=measure,
-                usr=log_head[0],
-                time=log_head[1],
-                eradiate_version=log_head[2],
-                branch=log_head[3],
-                commit=log_head[4],
-                git_url=log_head[5],
-            )
-            ex.merge_eradiate_bands_with_padding(
-                result.values(), result_fname, band_names=bnames
-            )
+        ex = EradiateXarray(
+            atmosphere=atmosphere,
+            canopy=canopy,
+            background_surface=background_surface,
+            illumination=illumination,
+            measure=measure,
+            usr=log_head[0],
+            time=log_head[1],
+            eradiate_version=log_head[2],
+            branch=log_head[3],
+            commit=log_head[4],
+            git_url=log_head[5],
+        )
+        bnames = (
+            [x["srf"].attrs["band"] for x in measu] if isinstance(result, dict) else None
+        )
+        ex.save_result(result, result_fname, band_names=bnames)
 
     def run_simulations(self):
         """
@@ -1913,7 +1911,8 @@ class RunSimulations:
         """
         something = 0
 
-    def get_logfile_header(self):
+    @staticmethod
+    def get_logfile_header():
         usr = getpass.getuser()
         tme = time.strftime("%Y-%m-%d %H:%M:%S")
         evers = eradiate.__version__
@@ -2068,6 +2067,62 @@ class EradiateXarray:
         ):
             return np.allclose(a_val, b_val)
         return np.array_equal(a_val, b_val)
+
+    def metadata_attrs(self):
+        """
+        Return the metadata stored on this object as netCDF attributes, leaving out
+        any that are not set because netCDF cannot store None.
+        """
+        attrs = {
+            "atmosphere": self.atmosphere,
+            "canopy": self.canopy,
+            "background_surface": self.background_surface,
+            "illumination": self.illumination,
+            "measure": self.measure,
+            "user": self.usr,
+            "date_time": self.time,
+            "eradiate_version": self.eradiate_version,
+            "branch": self.branch,
+            "commit": self.commit,
+            "git_url": self.git_url,
+        }
+        return {key: value for key, value in attrs.items() if value is not None}
+
+    def save_result(self, result, out_file, band_names=None, compression=False):
+        """
+        Save the output of eradiate.run to a single netCDF file.
+
+        A single-band simulation returns one xarray.Dataset, which is written
+        directly. A multi-band simulation returns a dict of datasets (one per band),
+        which are merged along a 'band' dimension before writing.
+
+        Parameters:
+        -----------
+        result       : xarray.Dataset or dict of xarray.Dataset
+                       Output of eradiate.run
+        out_file     : str
+                       Name of the output netCDF file to create
+        band_names   : list of str/int/float or None
+                       Names of the bands, in the same order as the dict values. Only
+                       used for multi-band results.
+        compression  : bool; default False
+                       Determine whether the output netCDF file should be compressed
+        """
+        if isinstance(result, dict):
+            return self.merge_eradiate_bands_with_padding(
+                list(result.values()),
+                out_file,
+                band_names=band_names,
+                compression=compression,
+            )
+
+        result.attrs.update(self.metadata_attrs())
+        if compression:
+            encoding = {var: {"zlib": True, "complevel": 4} for var in result.data_vars}
+            result.to_netcdf(out_file, encoding=encoding, engine="netcdf4")
+        else:
+            result.to_netcdf(out_file)
+        return result
 
     def merge_eradiate_bands_with_padding(
         self,
@@ -2273,18 +2328,7 @@ class EradiateXarray:
             "padded to a common spectral length."
         )
 
-        out.attrs["atmosphere"] = self.atmosphere
-        out.attrs["canopy"] = self.canopy
-        out.attrs["background_surface"] = self.background_surface
-        out.attrs["illumination"] = self.illumination
-        out.attrs["measure"] = self.measure
-
-        out.attrs["user"] = self.usr
-        out.attrs["date_time"] = self.time
-        out.attrs["eradiate_version"] = self.eradiate_version
-        out.attrs["branch"] = self.branch
-        out.attrs["commit"] = self.commit
-        out.attrs["git_url"] = self.git_url
+        out.attrs.update(self.metadata_attrs())
 
         if compression:
             encoding = {var: {"zlib": True, "complevel": 4} for var in out.data_vars}
